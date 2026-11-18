@@ -1,0 +1,8 @@
+.venv/
+.env
+__pycache__/
+.pytest_cache/
+node_modules/
+data/input/*
+data/output/*
+experiment_outputs/
