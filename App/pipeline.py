@@ -13,22 +13,108 @@ from io import BytesIO
 
 from .geometry.service import build_grid, cell_crop, cell_polygon
 from .ocr.engine import read_cell, read_full, read_line
+from .ocr.p1_batch import BatchCell, read_batches
+from .ocr.p1_numbers import parse_number
+from .ocr.p1_recovery import recover_invalid_and_rows, recover_total_mismatch
 from .config import positive_int, setting, ROOT
 from .ocr.ocr_performance import OCRPerformance
 
 
 def number(text):
-    text = re.sub(r'[^\d,.]', '', str(text or '')).replace(',', '.')
-    try:
-        return Decimal(text) if text and text.count('.') <= 1 else None
-    except InvalidOperation:
-        return None
+    # P1: reject ambiguous/malformed digits instead of silently deleting OCR characters.
+    return parse_number(text)
+
 
 
 def png(image):
     ok, data = cv2.imencode('.png', image)
     if not ok: raise ValueError('Не удалось сохранить изображение')
     return 'data:image/png;base64,' + base64.b64encode(data).decode('ascii')
+
+
+def is_footer_label(text):
+    """Identify an observed total label; it is evidence, not a grid line."""
+    text = str(text or '').strip().casefold()
+    if re.fullmatch(r'total\s*[:.]?', text):
+        return True
+    text = text.translate(str.maketrans({'қ':'к', 'ғ':'г', 'і':'и',
+                                         'k':'к', 'o':'о', 'p':'р', 'c':'с',
+                                         'a':'а', 'e':'е', 'b':'в', 'h':'н'}))
+    text = re.sub(r'[^а-яёa-z]', '', text)
+    return text in {'корытынды', 'жиыны', 'барлыгы', 'барлыгысы',
+                    'итог', 'итого', 'всего'}
+
+
+def recover_tax_below_grid(image, rect, columns, row_id):
+    """Read a visible VAT row below the detected grid without inventing a line."""
+    if rect.method != 'original_cells' or not {'name', 'quantity', 'price'} <= columns.keys():
+        return None
+    grid = rect.info['source_grid']
+    if len(grid['horizontal']) < 3:
+        return None
+    height, width = image.shape[:2]
+    last = grid['horizontal'][-1]
+    gaps = np.diff([rule.position for rule in grid['horizontal']])
+    band_height = max(12, min(80, round(float(np.median(gaps[-4:])) * .75)))
+
+    def observed_band(field, *, start=2, end_col=None):
+        col = columns[field]
+        right_col = col+1 if end_col is None else end_col
+        left = int(grid['vertical'][col].eval((last.position-height/2)/height)) + 2
+        right = int(grid['vertical'][right_col].eval((last.position-height/2)/height)) - 2
+        left, right = max(0, left), min(width, right)
+        if right-left < 4:
+            return None
+        x = np.arange(left, right)
+        baseline = np.asarray(last.eval((x-width/2)/width))
+        mx = np.broadcast_to(x, (band_height, len(x))).astype(np.float32)
+        my = (baseline[None,:] + np.arange(start, start+band_height)[:,None]).astype(np.float32)
+        if my.min() < 0 or my.max() >= height:
+            return None
+        crop = cv2.remap(image, mx, my, cv2.INTER_CUBIC,
+                         borderMode=cv2.BORDER_CONSTANT, borderValue=(255,255,255))
+        corners = [[round(float(mx[y,x]),2), round(float(my[y,x]),2)]
+                   for y,x in ((0,0),(0,-1),(-1,-1),(-1,0))]
+        return crop, corners
+
+    name_band = observed_band('name')
+    if name_band is None:
+        return None
+    name = read_line(name_band[0])
+    if not name or name['confidence'] < .65 or not re.search(r'[нh][дd][сc]\s*\d{1,2}\s*%', name['text'], re.I):
+        return None
+    # The total label can cross the number/name column boundary. Read both
+    # together below the VAT band and require a known, observed footer word.
+    footer_band = observed_band('number', start=band_height,
+                                end_col=columns['name']+1)
+    if footer_band is None:
+        return None
+    marker = read_line(footer_band[0])
+    if not marker or marker['confidence'] < .65 or not is_footer_label(marker['text']):
+        return None
+    cells = {}
+    for field in ('name', 'quantity', 'price'):
+        band = name_band if field == 'name' else observed_band(field)
+        if band is None:
+            return None
+        result = name if field == 'name' else read_line(band[0])
+        if not result or result['confidence'] < .65:
+            return None
+        if field != 'name' and number(result['text']) is None:
+            return None
+        box = band[1]
+        cells[field] = {'text':result['text'], 'confidence':result['confidence'],
+                        'bbox':[min(p[0] for p in box),min(p[1] for p in box),
+                                max(p[0] for p in box),max(p[1] for p in box)],
+                        'source_bbox':box, 'cell_id':f'{row_id}-{field}',
+                        'row_id':row_id, 'column_id':field, 'blocks':[],
+                        'strategy':'visible_tax_below_grid'}
+    cells['number'] = {'text':'', 'confidence':None, 'derived':True, 'blocks':[],
+                       'source_bbox':[], 'row_id':row_id, 'column_id':'number'}
+    q,p = number(cells['quantity']['text']),number(cells['price']['text'])
+    bottom = int(max(point[1] for cell in cells.values() for point in cell['source_bbox']) + 1)
+    return {'row_id':row_id, 'kind':'tax', 'cells':cells, 'line_total':str(q*p),
+            'printed_line_total':None, 'printed_line_match':None}, bottom, marker
 
 
 def process(data, publish=None, job_id=None, *, rectify=False):
@@ -107,6 +193,7 @@ def _process(data, profile, job_dir, rectify):
     ocr_start = time.perf_counter()
     profile.phase('Подготовка OCR и чтение ячеек')
     rows = []
+    numeric_issues = []
     xs = [int(round(x)) for x in rect.xs]; ys = [int(round(y)) for y in rect.ys]
     if len(xs) == 5:
         columns = {'number':0, 'name':1, 'quantity':2, 'price':3}
@@ -133,29 +220,79 @@ def _process(data, profile, job_dir, rectify):
             raise ValueError('Не удалось уверенно определить столбцы по заголовку: ' + ', '.join(header_texts))
     geometry['columns'] = columns
     # First band is the table header. All subsequent bands are physical rows.
-    for idx, (top, bottom) in enumerate(zip(ys[1:-1], ys[2:]), 1):
-        cells = {}
-        for col in ('number', 'name', 'quantity', 'price'):
-            k = columns[col]
-            left, right = xs[k], xs[k+1]
-            label = {'number':'номер', 'name':'наименование', 'quantity':'количество', 'price':'цена'}[col]
-            profile.phase(f'OCR: строка {idx}, {label}')
-            crop, offset, source_bbox = cell_crop(rect, idx, k)
-            cells[col] = read_cell(crop, idx, col, offset)
-            if col == 'name' and bottom == ys[-1] and not re.search(r'[нh][дd][сc]|vat', cells[col]['text'], re.I):
-                alternate = read_cell(crop, idx, col, offset, force_single=True)
-                if re.search(r'[нh][дd][сc]|vat', alternate['text'], re.I):
-                    cells[col] = alternate
-            cells[col]['source_bbox'] = source_bbox
-        name = cells['name']['text'].strip()
-        if name and cells['name']['confidence'] < .5:
+    # P1: extract each cell once, then submit single-line recognition in batches.
+    # Physical row numbers are DERIVED from the ordered grid, not claimed as OCR.
+    profile.phase('OCR P1: подготовка пакетов ячеек')
+    cell_requests, crop_map = [], {}
+    body_row_count = len(ys)-2
+    field_order = ('name','quantity','price') + (('printed_total',) if 'printed_total' in columns else ())
+    for idx in range(1, body_row_count+1):
+        for field in field_order:
+            crop, offset, source_bbox = cell_crop(rect, idx, columns[field])
+            cell_requests.append(BatchCell(crop, idx, field, offset, source_bbox))
+            if field in ('quantity','price','printed_total'):
+                crop_map[(idx,field)] = crop
+    profile.phase('OCR P1: пакетный RapidOCR')
+    readouts, batch_stats = read_batches(cell_requests, batch_size=positive_int('OCR_REC_BATCH_NUM',8))
+    geometry['ocr_batch'] = batch_stats
+    if batch_stats['batch_fallback']:
+        geometry['warnings'].append('Пакетный OCR был частично заменён поячейковым: ' + '; '.join(batch_stats['errors'][:2]))
+    profile.phase('OCR P1: сборка товарных строк')
+    for idx in range(1, body_row_count+1):
+        k = columns['number']
+        cells = {'number': {
+            'text':str(idx), 'confidence':None, 'derived':True,
+            'strategy':'physical_row_order', 'cell_id':f'{idx}-number',
+            'row_id':idx, 'column_id':'number',
+            'bbox':[xs[k],ys[idx],xs[k+1],ys[idx+1]],
+            'source_bbox':[], 'blocks':[]}}
+        cells.update({field:readouts[(idx,field)] for field in field_order})
+        if idx == body_row_count and not re.search(r'[нh][дd][сc]|vat',cells['name']['text'],re.I):
+            # VAT name may be split across several observed printed fragments.
+            old = cells['name']
+            candidate = next(c for c in cell_requests if c.row_id == idx and c.column_id == 'name')
+            alternate = read_cell(candidate.image, idx, 'name', candidate.offset, force_single=True)
+            if re.search(r'[нh][дd][сc]|vat',alternate['text'],re.I):
+                alternate['source_bbox'] = candidate.source_bbox
+                cells['name'] = alternate
+        name_text = cells['name']['text'].strip()
+        if name_text and cells['name']['confidence'] < .5:
             geometry['warnings'].append(f'Строка {idx}: низкая уверенность в наименовании, проверьте текст.')
-        if not name and not cells['quantity']['text'] and not cells['price']['text']:
+        if not name_text and not cells['quantity']['text'] and not cells['price']['text']:
             geometry['warnings'].append(f'Строка {idx} не распознана: проверьте сетку.')
-        vat = bool(re.search(r'[нh][дd][сc]|vat', name, re.I))
-        q, p = number(cells['quantity']['text']), number(cells['price']['text'])
-        rows.append({'row_id': idx, 'kind': 'tax' if vat else 'product', 'cells': cells,
-                     'line_total': str(q*p) if q is not None and p is not None else None})
+        vat = bool(re.search(r'[нh][дd][сc]|vat',name_text,re.I))
+        if vat: cells['number']['text'] = ''  # Tax line is not a product ordinal.
+        q,p = number(cells['quantity']['text']),number(cells['price']['text'])
+        printed = number(cells['printed_total']['text']) if 'printed_total' in cells else None
+        rows.append({'row_id':idx,'kind':'tax' if vat else 'product','cells':cells,
+                     'line_total':str(q*p) if q is not None and p is not None else None,
+                     'printed_line_total':str(printed) if printed is not None else None,
+                     'printed_line_match':(abs(q*p-printed) <= Decimal('0.01')) if
+                         q is not None and p is not None and printed is not None else None})
+    profile.phase('OCR P1: выборочное восстановление чисел')
+    retry_budget = positive_int('OCR_P1_MAX_RETRIES', 4)
+    initial_recovery = recover_invalid_and_rows(rows,crop_map,max_retries=retry_budget)
+    geometry['ocr_recovery'] = {'initial':initial_recovery}
+    recovered_tax_bottom = None
+    if not any(row['kind'] == 'tax' for row in rows):
+        profile.phase('Проверка строки НДС под сеткой')
+        recovered_tax = recover_tax_below_grid(image, rect, columns, len(rows)+1)
+        if recovered_tax:
+            row, recovered_tax_bottom, footer_marker = recovered_tax
+            rows.append(row)
+            geometry['footer_marker'] = footer_marker
+            geometry['warnings'].append('Строка НДС прочитана под границей сетки; проверьте её расположение и данные.')
+            # Show the independently read band below the existing mesh in a
+            # different color; do not draw it as a detected physical grid line.
+            left, top = rect.info['source_offset']
+            right = min(image.shape[1], left + overlay.shape[1])
+            bottom = min(image.shape[0], max(top + overlay.shape[0], recovered_tax_bottom + 16))
+            expanded = image[top:bottom, left:right].copy()
+            expanded[:overlay.shape[0], :overlay.shape[1]] = overlay
+            for field in ('name', 'quantity', 'price'):
+                points = np.rint(np.asarray(row['cells'][field]['source_bbox']) - [left, top]).astype(np.int32)
+                cv2.polylines(expanded, [points], True, (0, 160, 255), 2, cv2.LINE_AA)
+            overlay = expanded
     # The printed total is below the table, outside the mesh; use the inverse
     # map to locate that region in the original, then OCR it independently.
     last_y = min(rect.map_y.shape[0]-1, max(0, ys[-1]))
@@ -163,14 +300,21 @@ def _process(data, profile, job_dir, rectify):
         y_bottom = int(max(np.max(cell_polygon(rect, len(ys)-2, k)[34:51, 1]) for k in range(len(xs)-1)) + rect.info['source_offset'][1])
     else:
         y_bottom = int(np.max(rect.map_y[last_y, max(0,xs[0]):min(rect.map_y.shape[1],xs[-1])]))
+    if recovered_tax_bottom is not None:
+        y_bottom = max(y_bottom, recovered_tax_bottom)
     footer_top = max(0,y_bottom-20)
     footer = image[footer_top:min(image.shape[0], y_bottom+max(55,int(image.shape[1]*.09))), :]
     profile.phase('Распознавание напечатанного итога')
     footer_left = int(image.shape[1]*.45)
     total_crop = footer[:,footer_left:]
-    def read_total(scale):
+    def read_total(scale, *, fast=False):
         sample = cv2.resize(total_crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC) if scale != 1 else total_crop
-        lines = read_full(sample) if sample.size else []
+        if not sample.size:
+            lines = []
+        elif fast:
+            lines = read_full(sample, footer_mode=True)
+        else:
+            lines = read_full(sample)
         for line in lines:
             line['bbox'] = [[x/scale+footer_left, y/scale+footer_top] for x,y in line['bbox']]
         # Numeric blocks at the right of the same baseline form the printed
@@ -189,7 +333,7 @@ def _process(data, profile, job_dir, rectify):
             candidate = number(''.join(x['text'] for x in same_line))
             if candidate is not None: return str(candidate), lines, min(x['confidence'] for x in same_line)
         return None, lines, 0.0
-    current_sum = sum((number(r['line_total']) or Decimal(0) for r in rows), Decimal(0))
+    current_sum = sum((Decimal(r['line_total']) for r in rows if r['line_total'] is not None), Decimal(0))
     fast_x = int(image.shape[1]*.50)
     fast_top, fast_bottom = max(0,y_bottom+2), min(image.shape[0], y_bottom+int(image.shape[1]*.05))
     direct = read_line(image[fast_top:fast_bottom,fast_x:])
@@ -230,8 +374,18 @@ def _process(data, profile, job_dir, rectify):
                     break
                 candidates.append(candidate)
     if total is None:
-        total, footer_lines, total_confidence = read_total(1)
-        footer_attempts.append({'scale':1, 'total':total, 'confidence':total_confidence, 'lines':footer_lines})
+        try:
+            total, footer_lines, total_confidence = read_total(1, fast=True)
+            footer_attempts.append({'strategy':'fast_detector', 'scale':1, 'total':total,
+                                    'confidence':total_confidence, 'lines':footer_lines})
+        except Exception as exc:
+            total, footer_lines, total_confidence = None, [], 0.0
+            footer_attempts.append({'strategy':'fast_detector', 'scale':1,
+                                    'error':f'{type(exc).__name__}: {exc}'})
+        if total is None or total_confidence < .85:
+            total, footer_lines, total_confidence = read_total(1)
+            footer_attempts.append({'strategy':'standard_detector', 'scale':1, 'total':total,
+                                    'confidence':total_confidence, 'lines':footer_lines})
         # A reliable printed total is evidence in its own right. A mismatch can
         # come from a product cell, so don't keep rerunning the footer for it.
         if total is None or (total_confidence < .85 and abs(current_sum - number(total)) > Decimal('0.01')):
@@ -239,14 +393,35 @@ def _process(data, profile, job_dir, rectify):
             footer_attempts.append({'scale':2, 'total':second_total, 'confidence':second_confidence, 'lines':second_lines})
             if second_total is not None and (total is None or second_confidence > total_confidence):
                 total, footer_lines = second_total, second_lines
+    # Only investigate footer mismatch AFTER normal OCR; never invent numbers.
+    profile.phase('OCR P1: проверка напечатанного итога')
+    footer_recovery = recover_total_mismatch(rows,crop_map,number(total),
+        max_retries=max(0,retry_budget-initial_recovery['attempted']))
+    geometry['ocr_recovery']['footer'] = footer_recovery
+    if initial_recovery['candidates'] or footer_recovery['candidates']:
+        geometry['warnings'].append('Есть альтернативные варианты OCR чисел, требующие проверки.')
+    invalid_printed = [r['row_id'] for r in rows if r.get('printed_line_match') is False]
+    if invalid_printed:
+        geometry['warnings'].append('Несовпадение напечатанных сумм в строках: ' + ', '.join(map(str,invalid_printed)))
+    for row in rows:
+        for col in ('quantity','price'):
+            value = row['cells'][col]['text']
+            if number(value) is None:
+                issue = {'row_id':row['row_id'], 'column_id':col, 'text':str(value),
+                         'reason':'Число не распознано в безопасном формате; исходный текст сохранён.'}
+                row['cells'][col]['numeric_issue'] = issue['reason']
+                numeric_issues.append(issue)
+                label = 'количество' if col == 'quantity' else 'цену'
+                shown = str(value) if str(value).strip() else 'пустое значение'
+                geometry['warnings'].append(f'Строка {row["row_id"]}: проверьте {label} «{shown}» — число не рассчитано.')
     ocr_s = time.perf_counter() - ocr_start
     profile.phase('Сборка и проверка электронного чека')
-    computed = sum((number(r['line_total']) or Decimal(0) for r in rows), Decimal(0))
+    computed = sum((Decimal(r['line_total']) for r in rows if r['line_total'] is not None), Decimal(0))
     incomplete = any(r['line_total'] is None for r in rows)
     match = not incomplete and number(total) is not None and abs(computed-number(total)) <= Decimal('0.01')
     taxes = [r for r in rows if r['kind'] == 'tax']
-    product_sum = sum((number(r['line_total']) or Decimal(0) for r in rows if r['kind'] == 'product'), Decimal(0))
-    vat_sum = sum((number(r['line_total']) or Decimal(0) for r in taxes), Decimal(0))
+    product_sum = sum((Decimal(r['line_total']) for r in rows if r['kind'] == 'product' and r['line_total'] is not None), Decimal(0))
+    vat_sum = sum((Decimal(r['line_total']) for r in taxes if r['line_total'] is not None), Decimal(0))
     vat_rate = Decimal(setting('OCR_VAT_RATE_PERCENT', '16'))
     vat_ok = None if not taxes or incomplete else abs(vat_sum-product_sum*vat_rate/100) <= Decimal('1')
     if incomplete: geometry['warnings'].append('Есть ячейки с нераспознанным количеством или ценой.')
@@ -258,6 +433,7 @@ def _process(data, profile, job_dir, rectify):
     geometry['inverse_map'] = str(map_path.relative_to(ROOT)).replace('\\', '/')
     return {'status': 'review' if geometry['warnings'] else 'ok', 'geometry': geometry,
             'original': png(image), 'rectified': png(overlay), 'rows': rows,
+            'numeric_issues': numeric_issues,
             'total': total, 'computed_total': str(computed), 'math_match': match,
             'vat': {'status': 'not_applicable' if vat_ok is None else 'match' if vat_ok else 'mismatch',
                     'rate_percent': str(vat_rate), 'amount': str(vat_sum) if taxes else None},

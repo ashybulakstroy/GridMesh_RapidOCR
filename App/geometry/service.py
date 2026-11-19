@@ -4,7 +4,7 @@ import numpy as np
 from .lab_adapter_gridrefine_v3 import detect_for_lab
 from .geometry_lab.algorithms import mesh, Result, intersection
 from .geometry_lab.metrics import safety
-from .geometry_lab.physical_grid_graph_v3 import detect_physical_graph
+from .geometry_lab.physical_grid_graph_v3 import detect_physical_graph, evidence, ridge_response
 
 
 
@@ -39,8 +39,42 @@ def _refine_vertical_by_ink(image, rule, horizontal):
         return rule
     return Rule(rule.axis, coeff, float(np.polyval(coeff,0)), rule.support, rule.domain)
 
+
+def _recover_observed_horizontal(image, physical, automatic):
+    """Restore internal candidate boundaries only with original-pixel evidence."""
+    if automatic is None or len(physical['vertical']) != 5:
+        return physical, 0
+    horizontal = list(physical['horizontal'])
+    if len(horizontal) < 3:
+        return physical, 0
+    candidates = [h for h in automatic['horizontal']
+                  if horizontal[0].position + 8 < h.position < horizontal[-1].position - 8
+                  and all(abs(h.position - known.position) >= 8 for known in horizontal)]
+    if not candidates:
+        return physical, 0
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    response, dark = ridge_response(gray)
+    width = image.shape[1]
+    sample = (np.linspace(physical['vertical'][0].position,
+                          physical['vertical'][-1].position, 100) - width / 2) / width
+    recovered = 0
+    for candidate in candidates:
+        observed = evidence(candidate, physical['vertical'], gray.shape, response, dark)
+        if not observed or not observed['accepted']:
+            continue
+        if any(np.min(np.abs(candidate.eval(sample) - h.eval(sample))) < 6 for h in horizontal):
+            continue
+        horizontal.append(candidate)
+        recovered += 1
+    if recovered:
+        horizontal.sort(key=lambda rule: rule.position)
+        return {**physical, 'horizontal': horizontal}, recovered
+    return physical, 0
+
 def build_grid(image, *, rectify=False, phase=None):
     data, report = detect_for_lab(image)
+    automatic_data = data
+    recovered_horizontal = 0
     method = 'AutoGrid GridRefine V3'
     auto_vertical_count = len(data['vertical']) if data is not None else None
     # Reject grids that Grid Mesh cannot represent before choosing a detector.
@@ -71,6 +105,8 @@ def build_grid(image, *, rectify=False, phase=None):
                 data, report, method = physical, physical_report, 'Physical Grid Graph V3'
         else:
             data, report, method = physical, physical_report, 'Physical Grid Graph V3'
+    if data is not None and method == 'Physical Grid Graph V3':
+        data, recovered_horizontal = _recover_observed_horizontal(image, data, automatic_data)
     if data is None:
         raise ValueError('Не удалось уверенно найти печатную сетку таблицы. Загрузите другое фото.')
     if not 5 <= len(data['vertical']) <= 9 or len(data['horizontal']) < 3:
@@ -101,6 +137,8 @@ def build_grid(image, *, rectify=False, phase=None):
     check = safety(result.info['cell_mesh'] if not rectify else result, image.shape)
     review = bool(report.get('autogrid', {}).get('geometry_review_required'))
     warnings = []
+    if recovered_horizontal:
+        warnings.append(f'Восстановлено границ строк по видимым линиям: {recovered_horizontal}; проверьте сетку и данные.')
     if invalid_spacing:
         warnings.append('Основной детектор нашёл слишком близкие границы; применена резервная сетка. Проверьте данные.')
     if 'vertical_completion' in report:

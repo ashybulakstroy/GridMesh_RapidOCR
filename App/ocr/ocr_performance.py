@@ -16,6 +16,7 @@ class OCRPerformance:
         self.cpu_peak = 0.0
         self.system_cpu = 0.0
         self.system_peak = 0.0
+        self.cpu_history = []
         self.stop_event = Event()
         self.thread = Thread(target=self._monitor, daemon=True)
         self.thread.start()
@@ -24,18 +25,21 @@ class OCRPerformance:
         proc = psutil.Process()
         proc.cpu_percent(None)
         psutil.cpu_percent(None)
-        while not self.stop_event.wait(.5):
+        while not self.stop_event.wait(.2):
             self.cpu_now = proc.cpu_percent(None)
             self.cpu_peak = max(self.cpu_peak, self.cpu_now)
             self.system_cpu = psutil.cpu_percent(None)
             self.system_peak = max(self.system_peak, self.system_cpu)
+            self.cpu_history.append({'elapsed_s':round(perf_counter()-self.start_wall, 2),
+                                     'system_cpu_percent':self.system_cpu,
+                                     'process_cpu_percent':self.cpu_now})
             self._publish()
 
     def _publish(self):
         self.publish({'phase': self.name, 'elapsed_s': round(perf_counter()-self.start_wall, 2),
                       'cpu_percent': self.cpu_now, 'cpu_peak_percent': self.cpu_peak,
                       'system_cpu_percent':self.system_cpu, 'system_cpu_peak_percent':self.system_peak,
-                      'samples': list(self.samples)})
+                      'samples': list(self.samples), 'cpu_history': list(self.cpu_history)})
 
     def phase(self, name):
         now, cpu = perf_counter(), process_time()
@@ -57,6 +61,7 @@ class OCRPerformance:
                 'cpu_core_equivalents':round(used/wall,2) if wall else 0,
                 'peak_process_cpu_percent':self.cpu_peak, 'cpu_count':os.cpu_count(),
                 'peak_system_cpu_percent':self.system_peak,
+                'cpu_history':list(self.cpu_history),
                 'samples':self.samples,
                 'note':'CPU% процесса: 100% соответствует одному логическому ядру; '
                        'замер процесса включает все его потоки и может включать фоновую работу сервера.'}

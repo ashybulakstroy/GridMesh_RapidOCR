@@ -5,4 +5,5 @@ __pycache__/
 node_modules/
 data/input/*
 data/output/*
+data/experiment_backups/
 experiment_outputs/

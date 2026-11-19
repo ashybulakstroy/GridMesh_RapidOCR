@@ -9,6 +9,7 @@ from ..config import positive_int
 
 _engine = None
 _english_engine = None
+_footer_engine = None
 _lock = threading.RLock()
 
 
@@ -21,6 +22,7 @@ def engine():
                     'Rec.lang_type': LangRec.CYRILLIC,
                     'Rec.ocr_version': OCRVersion.PPOCRV5,
                     'Rec.model_type': ModelType.MOBILE,
+                    'Rec.rec_batch_num': positive_int('OCR_REC_BATCH_NUM', 8),
                     'Det.ocr_version': OCRVersion.PPOCRV5,
                     'Det.model_type': ModelType.MOBILE,
                     'Global.use_cls': False,
@@ -31,10 +33,33 @@ def engine():
     return _engine
 
 
-def read_full(image):
+def footer_engine():
+    """Detector profile for short, wide receipt footer regions."""
+    global _footer_engine
+    if _footer_engine is None:
+        with _lock:
+            if _footer_engine is None:
+                _footer_engine = RapidOCR(params={
+                    'Rec.lang_type': LangRec.CYRILLIC,
+                    'Rec.ocr_version': OCRVersion.PPOCRV5,
+                    'Rec.model_type': ModelType.MOBILE,
+                    'Rec.rec_batch_num': positive_int('OCR_REC_BATCH_NUM', 8),
+                    'Det.ocr_version': OCRVersion.PPOCRV5,
+                    'Det.model_type': ModelType.MOBILE,
+                    'Det.limit_type': 'max',
+                    'Det.limit_side_len': 736,
+                    'Global.use_cls': False,
+                    'Global.text_score': 0.25,
+                    'EngineConfig.onnxruntime.intra_op_num_threads': positive_int('OCR_ONNX_THREADS', 2),
+                    'EngineConfig.onnxruntime.inter_op_num_threads': 1,
+                })
+    return _footer_engine
+
+
+def read_full(image, *, footer_mode=False):
     if image is None or not image.size or min(image.shape[:2]) < 4: return []
     with _lock:
-        result = engine()(image, use_det=True, use_cls=False)
+        result = (footer_engine() if footer_mode else engine())(image, use_det=True, use_cls=False)
     if result.boxes is None or result.txts is None: return []
     lines = []
     for box, text, score in zip(result.boxes, result.txts, result.scores):

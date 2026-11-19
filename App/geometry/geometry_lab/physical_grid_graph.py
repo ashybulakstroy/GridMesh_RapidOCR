@@ -60,8 +60,13 @@ def connected_fragments(parts, width, tolerance=3.0):
         ma=(by-ay)/max(bx-ax,1); mb=(dy-cy)/max(dx-cx,1)
         lo=max(ax,cx); hi=min(bx,dx)
         if lo-hi > width*.18 or abs(ma-mb)>.12:return False
-        sample=np.linspace(min(lo,hi),max(lo,hi),3)
-        return bool(np.max(abs(ay+ma*(sample-ax)-cy-mb*(sample-cx)))<=tolerance)
+        # The distance between two straight lines is linear, so the largest
+        # absolute distance on this interval occurs at an endpoint. Avoid
+        # allocating a NumPy array for every fragment pair.
+        start, end = min(lo,hi), max(lo,hi)
+        first = abs(ay+ma*(start-ax)-cy-mb*(start-cx))
+        last = abs(ay+ma*(end-ax)-cy-mb*(end-cx))
+        return max(first,last) <= tolerance
     groups=[]
     for p in sorted(parts,key=lambda p:-p[2]):
         possible=[g for g in groups if any(compatible(p,q) for q in g)

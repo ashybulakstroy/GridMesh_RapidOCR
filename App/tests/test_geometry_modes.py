@@ -13,3 +13,20 @@ def test_straight_observed_grid_uses_original_pixels(monkeypatch):
     x, y = round(result.xs[0]), round(result.ys[0])
     assert abs(result.map_x[y,x] - 20) < 1
     assert abs(result.map_y[y,x] - 20) < 1
+
+
+def test_recover_only_horizontal_with_observed_ink(monkeypatch):
+    img = np.full((200, 250, 3), 255, dtype=np.uint8)
+    vertical = [Rule('v', np.array([float(x)]), float(x), 1., (20, 180))
+                for x in (20, 50, 140, 180, 225)]
+    def line(y):
+        return Rule('h', np.array([float(y)]), float(y), 1., (20, 225))
+    physical = {'vertical': vertical, 'horizontal': [line(y) for y in (20, 60, 170)]}
+    automatic = {'horizontal': [line(y) for y in (20, 60, 110, 140, 170)]}
+    monkeypatch.setattr(service, 'ridge_response', lambda gray: (gray, gray))
+    monkeypatch.setattr(service, 'evidence',
+                        lambda rule, *_: {'accepted': rule.position == 110})
+    result, recovered = service._recover_observed_horizontal(img, physical, automatic)
+    assert recovered == 1
+    assert [h.position for h in result['horizontal']] == [20, 60, 110, 170]
+    assert len(physical['horizontal']) == 3
