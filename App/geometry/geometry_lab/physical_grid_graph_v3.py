@@ -81,6 +81,39 @@ def evidence(rule,vv,shape,response,dark):
         reason='physical_source_arms_and_four_columns' if accepted else 'insufficient_source_arms_or_column_ink')
 
 
+def refine_nearby_ridge(rule, vv, shape, response, dark, observed):
+    """Refit a near-complete observed rule within 3 px; retain evidence thresholds."""
+    if (observed['ink_coverage'] < .80 or min(observed['column_coverage']) < .35
+            or sum(observed['intersection_evidence']) < 4):
+        return rule, observed
+    H, W = shape
+    xs = np.arange(max(0,round(vv[0].position)+3),
+                   min(W,round(vv[-1].position)-2), dtype=float)
+    if len(xs) < 40:
+        return rule, observed
+    norm = (xs-W/2)/W
+    base = rule.eval(norm)
+    offsets = np.arange(-3,4)
+    yy = np.rint(base[:,None]+offsets).astype(int).clip(0,H-1)
+    values = response[yy,xs.astype(int)[:,None]] - .7*abs(offsets)[None,:]
+    ys = yy[np.arange(len(xs)),values.argmax(axis=1)]
+    for degree in (2,3):
+        coeff = np.polyfit(norm,ys,degree)
+        for _ in range(3):
+            keep = abs(ys-np.polyval(coeff,norm)) < 1.6
+            if keep.sum() < len(xs)*.75:
+                break
+            coeff = np.polyfit(norm[keep],ys[keep],degree)
+        if np.max(abs(np.polyval(coeff,norm)-base)) > 3:
+            continue
+        refined = Rule('h',coeff,float(np.polyval(coeff,0)),rule.support,rule.domain)
+        checked = evidence(refined,vv,shape,response,dark)
+        if checked and checked['accepted']:
+            checked['refinement'] = 'nearby_source_ridge_3px'
+            return refined, checked
+    return rule, observed
+
+
 def detect_physical_graph(image):
     baseline,previous=v2(image)
     gray=cv2.cvtColor(image,cv2.COLOR_BGR2GRAY);H,W=gray.shape
@@ -144,6 +177,8 @@ def detect_physical_graph(image):
     for rule in horizontal:
         ev=evidence(rule,vv,(H,W),response,dark)
         if ev is None:continue
+        if not ev['accepted']:
+            rule, ev = refine_nearby_ridge(rule,vv,(H,W),response,dark,ev)
         # Do not extrapolate an unrelated underline across the table.
         sample=np.linspace(rule.domain[0],rule.domain[1],30)
         y=rule.eval((sample-W/2)/W)

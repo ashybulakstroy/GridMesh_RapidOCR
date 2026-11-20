@@ -165,3 +165,25 @@ def test_fallback_when_detected_grid_has_duplicate_boundaries():
     assert len([r for r in result['rows'] if r['kind'] == 'tax']) == 1
     assert result['status'] == 'review'
     assert result['total'] == '93612.00'
+
+
+def test_long_receipt_keeps_first_product_and_separates_sixth_seventh():
+    result = process((HERE/'fixtures'/'receipt_long_grid.png').read_bytes())
+    rows = result['rows']
+    assert len(rows) == 30
+    assert sum(row['kind'] == 'product' for row in rows) == 29
+    assert rows[-1]['kind'] == 'tax'
+    assert result['geometry']['ridge_refined_horizontal'] == 2
+    for index, quantity, price in ((1,100,390),(6,10,150),(7,50,2250)):
+        row = rows[index-1]
+        assert number(row['cells']['quantity']['text']) == quantity
+        assert number(row['cells']['price']['text']) == price
+        assert row['cells']['number']['text'] == str(index)
+    sixth = np.asarray(rows[5]['cells']['price']['source_bbox'])
+    seventh = np.asarray(rows[6]['cells']['price']['source_bbox'])
+    assert sixth[:,1].max() < seventh[:,1].min()
+    assert number(rows[15]['cells']['price']['text']) == 380
+    assert number(rows[-1]['cells']['price']['text']) == 1
+    assert result['total'] == '538936.00'
+    # Remaining numerical discrepancies must remain visible, never force balance.
+    assert not result['math_match']

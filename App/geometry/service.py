@@ -164,6 +164,7 @@ def build_grid(image, *, rectify=False, phase=None):
         for y in result.ys:
             cv2.line(overlay, (round(result.xs[0]), round(y)), (round(result.xs[-1]), round(y)), (255, 100, 0), 2)
     return result, overlay, {'method': method, 'autogrid_vertical_count': auto_vertical_count,
+                             'ridge_refined_horizontal': sum(edge.get('refinement') == 'nearby_source_ridge_3px' for edge in report.get('edges', [])),
                              'rectification': result.method, 'safety': check, 'warnings': warnings}
 
 

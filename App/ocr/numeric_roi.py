@@ -3,6 +3,66 @@ import cv2
 import numpy as np
 
 
+def split_price_currency(image):
+    """Remove only a separated, observed T-shaped currency glyph from OCR input."""
+    if image is None or not image.size or min(image.shape[:2]) < 8:
+        return image, None
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+    _, ink = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    h,w = ink.shape
+    ink[np.count_nonzero(ink,axis=1) > w*.94,:] = 0
+    ink[:,np.count_nonzero(ink,axis=0) > h*.94] = 0
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(ink)
+    for component in range(1,count):
+        if stats[component,cv2.CC_STAT_AREA] < 3:
+            ink[labels == component] = 0
+    occupied = np.count_nonzero(ink,axis=0) > 0
+    edges = np.diff(np.r_[False,occupied,False].astype(np.int8))
+    groups = list(zip(np.flatnonzero(edges==1),np.flatnonzero(edges==-1)))
+    if len(groups) < 2:
+        return image, None
+    left,right = groups[-1]
+    ys = np.flatnonzero(np.count_nonzero(ink[:,left:right],axis=1))
+    if not len(ys):
+        return image, None
+    top,bottom = int(ys[0]),int(ys[-1])+1
+    glyph = ink[top:bottom,left:right] > 0
+    gh,gw = glyph.shape
+    if gh < 6 or gw < 4 or not .35 <= gw/gh <= 1.2 or left-groups[-2][1] < max(2,gh*.15):
+        return image, None
+    # A T/tenge sign has a wide upper bar and a narrow, centered vertical stem.
+    # A final 7 normally has a sloping stem; 0/8 have wide lower strokes.
+    upper = glyph[:max(2,round(gh*.4))]
+    lower = glyph[round(gh*.45):]
+    widths = lower.sum(axis=1)
+    if np.count_nonzero(upper.sum(axis=1) >= gw*.75) < 2 or len(widths) < 3:
+        return image, None
+    if np.any(widths == 0) or np.max(widths) > gw*.55:
+        return image, None
+    centers = np.array([np.flatnonzero(row).mean() for row in lower])
+    if centers.std() > gw*.10 or not gw*.25 <= centers.mean() <= gw*.70:
+        return image, None
+    if abs(centers[0]-centers[-1]) > gw*.15:
+        return image, None
+    cut = int(left)
+    if cut < 5 or np.count_nonzero(ink[:,:cut]) < 8:
+        return image, None
+    digit_count = 0
+    for a,b in groups[:-1]:
+        glyph_rows = np.flatnonzero(np.count_nonzero(ink[:,a:b],axis=1))
+        if not len(glyph_rows):
+            continue
+        digit_height = int(glyph_rows[-1]-glyph_rows[0]+1)
+        if digit_height < gh*.5:  # decimal punctuation is not a digit
+            continue
+        if digit_height > gh*1.7:
+            return image, None  # a ruling line contaminated this cell
+        digit_count += max(1, round((b-a)/gw))
+    return image[:,:cut].copy(), {'symbol':'₸', 'strategy':'separate_t_shape',
+                                  'numeric_glyph_count':digit_count,
+                                  'bbox':[int(left),top,int(right),bottom]}
+
+
 def crop_numeric_ink(image):
     if image is None or image.ndim not in (2, 3) or not image.size:
         return image, {'changed': False, 'reason': 'empty'}

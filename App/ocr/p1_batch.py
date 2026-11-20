@@ -8,7 +8,8 @@ from time import perf_counter
 import numpy as np
 
 from .engine import engine, read_cell, _has_separate_numeric_lines, _lock
-from .numeric_roi import crop_numeric_ink
+from .numeric_roi import crop_numeric_ink, split_price_currency
+import re
 from ..config import setting
 
 
@@ -100,9 +101,34 @@ def read_batches(cells, *, batch_size=8):
                     item['source_bbox'] = c.source_bbox
                     item['strategy'] = 'legacy_batch_fallback'
                     out[(c.row_id,c.column_id)] = item
+    # Inspect only suspicious all-numeric prices ending in 7. Correct currency
+    # text needs no extra work; image evidence is required before changing a digit.
+    for cell in working:
+        key = (cell.row_id, cell.column_id)
+        raw = out[key]['text'].strip()
+        if (cell.column_id == 'price' and re.fullmatch(r'[0-9]+(?:[,.][0-9]+)?7', raw)
+                and roi_seconds < roi_limit_s):
+            started = perf_counter()
+            _, currency = split_price_currency(cell.image)
+            roi_seconds += perf_counter() - started
+            if currency is not None:
+                roi_metadata.setdefault(key, {})['currency'] = currency
+    stats['numeric_roi_ms'] = round(roi_seconds*1000,3)
     for key, info in roi_metadata.items():
         result = out[key]
         result['numeric_roi'] = info
+        if info.get('currency'):
+            result['currency_symbol'] = info['currency']
+            result['ocr_text'] = result['text']
+            raw = result['text'].strip()
+            if re.fullmatch(r'[0-9]+(?:[,.][0-9]+)?', raw):
+                digits = sum(char.isdigit() for char in raw)
+                observed_digits = info['currency']['numeric_glyph_count']
+                if digits == observed_digits+1 and raw.endswith('7'):
+                    result['text'] = raw[:-1] + ' ₸'
+                    result['currency_symbol']['ocr_confusion'] = '7'
+                elif digits == observed_digits:
+                    result['text'] = raw + ' ₸'
         # ROI is internal to OCR: displayed/source coordinates still describe
         # the original physical cell, not the smaller input image.
         cell = originals[key]

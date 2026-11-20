@@ -56,10 +56,13 @@ def footer_engine():
     return _footer_engine
 
 
-def read_full(image, *, footer_mode=False):
+def read_full(image, *, footer_mode=False, cell_mode=False):
     if image is None or not image.size or min(image.shape[:2]) < 4: return []
+    scale = max(1., 160/min(image.shape[:2])) if cell_mode else 1.
+    if scale > 1:
+        image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     with _lock:
-        result = (footer_engine() if footer_mode else engine())(image, use_det=True, use_cls=False)
+        result = (footer_engine() if footer_mode or cell_mode else engine())(image, use_det=True, use_cls=False)
     if result.boxes is None or result.txts is None: return []
     lines = []
     for box, text, score in zip(result.boxes, result.txts, result.scores):
@@ -78,6 +81,9 @@ def read_full(image, *, footer_mode=False):
                     if re.search(r'[A-Za-z]', candidate):
                         text, score = candidate, float(alternate.scores[0])
         lines.append({'text': text, 'confidence': score, 'bbox': np.asarray(box).round(2).tolist()})
+    if scale > 1:
+        for line in lines:
+            line['bbox'] = [[x/scale,y/scale] for x,y in line['bbox']]
     return lines
 
 
@@ -188,7 +194,9 @@ def read_cell(image, row_id, column_id, offset, *, force_single=False):
     factor = 2
     enlarged = cv2.resize(image, None, fx=factor, fy=factor, interpolation=cv2.INTER_CUBIC)
     padded = cv2.copyMakeBorder(enlarged, 12, 12, 12, 12, cv2.BORDER_CONSTANT, value=(255,255,255))
-    lines = read_full(padded)
+    lines = read_full(padded, cell_mode=True) if column_id == 'name' else read_full(padded)
+    if column_id == 'name' and not lines:
+        lines = read_full(padded)
     for line in lines:
         line['bbox'] = [[(x-12)/factor, (y-12)/factor] for x,y in line['bbox']]
     # Baseline grouping keeps words on the same line in reading order.
