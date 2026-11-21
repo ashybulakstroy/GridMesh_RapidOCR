@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0",
+  "receipt_id": "short_01_2142701072",
+  "size_class": "short",
+  "source_image": "1000696512.jpg",
+  "source_note": "Оригинальные байты фото включены в data/images; SHA256 проверяется в ROI-разметке.",
+  "document_title": "Тапсырыс №2142701072",
+  "printed_date": "2026-10-21",
+  "printed_time": "11:58",
+  "currency": "KZT",
+  "ground_truth_status": "DRAFT_VISUAL_TRANSCRIPTION",
+  "approved_by_user": false,
+  "review_note": "Числа сверены с оригинальной фотографией; названия проверены построчно. Финальное утверждение владельцем не выставлено.",
+  "products": [
+    {
+      "row_no": 1,
+      "kind": "product",
+      "name": "Тачка садовая одноколесная усиленная ЭКСПЕРТ, пневмат. колесо, грузоподъемность -100кг, V-80л.",
+      "quantity": "2",
+      "unit_price": "23950",
+      "calculated_amount": "47900",
+      "name_needs_review": false
+    }
+  ],
+  "vat_row": {
+    "kind": "vat",
+    "printed_label": "НДС 16 %",
+    "printed_quantity": "7664",
+    "printed_unit_price": "1",
+    "amount": "7664"
+  },
+  "printed_total": "55564",
+  "expected_product_count": 1,
+  "expected_special_row_count": 1,
+  "derived_products_subtotal": "47900",
+  "amount_definition": "quantity * unit_price: calculated, not an OCR field printed on these receipts",
+  "verification": {
+    "numeric_verified_by_agent": true,
+    "names_verified_by_agent": true,
+    "verified_at": "2026-11-21",
+    "method": "Visual comparison against the original JPEG; arithmetic checked but not used to alter values.",
+    "note": "Числа сверены с оригиналом; названия проверены построчно. Финальное утверждение владельцем не выставлено."
+  }
+}

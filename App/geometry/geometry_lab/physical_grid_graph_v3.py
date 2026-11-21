@@ -114,10 +114,36 @@ def refine_nearby_ridge(rule, vv, shape, response, dark, observed):
     return rule, observed
 
 
+def _complete_short_grid(data, report):
+    """Accept an independently observed short grid only with strong ink evidence."""
+    if data is None or report.get('vertical_fallback') or not report.get('vertical_table_local_refit'):
+        return False
+    horizontal = data['horizontal']
+    edges = report.get('edges', [])
+    if len(data['vertical']) != 5 or len(horizontal) != 4 or len(edges) != 4:
+        return False
+    for edge in edges:
+        if (edge['ink_coverage'] < .90 or min(edge['column_coverage']) < .85 or
+                sum(edge['intersection_evidence']) < 4 or edge['longest_unsupported_fraction'] > .06):
+            return False
+    first, last = horizontal[0].position, horizontal[-1].position
+    for rejected in report.get('rejected', []):
+        position = rejected['position']
+        if (first + 8 < position < last - 8 and
+                all(abs(position - rule.position) > 7 for rule in horizontal) and
+                rejected['ink_coverage'] >= .55 and sum(rejected['intersection_evidence']) >= 3):
+            return False
+    return True
+
+
 def detect_physical_graph(image):
-    baseline,previous=v2(image)
     gray=cv2.cvtColor(image,cv2.COLOR_BGR2GRAY);H,W=gray.shape
-    response,dark=ridge_response(gray);parts=multiscale_segments(gray)
+    response,dark=ridge_response(gray)
+    baseline,previous=v2(image, ridge=(response,dark))
+    if _complete_short_grid(baseline,previous):
+        return baseline,dict(previous,version='physical_grid_graph_v3',
+                             selection='strong_short_grid', v2_status=previous['status'])
+    parts=multiscale_segments(gray)
     vertical=fit_segments(parts['v'],'v',(H,W));horizontal=fit_segments(parts['h'],'h',(H,W))
     report=dict(version='physical_grid_graph_v3',status='REJECTED',vertical_candidates=len(vertical),
         horizontal_candidates=len(horizontal),edges=[],rejected=[],v2_status=previous['status'],

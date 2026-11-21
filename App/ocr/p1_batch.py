@@ -33,7 +33,7 @@ def _convert(cell, text, score):
     return {**info, 'blocks':[info.copy()]}
 
 
-def read_batches(cells, *, batch_size=8):
+def read_batches(cells, *, batch_size=8, budget_multiplier=1):
     """Read one-line cells as batches, fallback to legacy for multiline cells.
 
     Returns (dict[(row_id, column_id)] -> legacy cell result, stats).
@@ -41,32 +41,54 @@ def read_batches(cells, *, batch_size=8):
     """
     if batch_size not in (1, 2, 4, 6, 8, 12, 16):
         raise ValueError('OCR_REC_BATCH_NUM: допустимы 1, 2, 4, 6, 8, 12, 16')
+    if budget_multiplier not in (1, 2):
+        raise ValueError('Допустимый множитель бюджета: 1 или 2')
     pending = {'numeric': [], 'text': []}
     out = {}
     stats = {'requested':len(cells), 'batch_size':batch_size, 'batch_calls':0,
              'multiline_fallback':0, 'batch_fallback':0, 'errors': []}
-    # Cooperative bound: stop starting optional ROI work after 5 ms per job.
+    # Cooperative bound: stop starting optional ROI work after 16 ms per job.
     # An individual OpenCV call is synchronous and cannot be preempted.
-    roi_limit_s = .005
+    crop_limit_s = .012 * budget_multiplier
+    roi_limit_s = .016 * budget_multiplier
     roi_seconds = 0.0
     roi_metadata = {}
     originals = {(c.row_id, c.column_id): c for c in cells}
-    working = []
+    working = list(cells)
     roi_skipped = 0
+    skipped_cells = []
     roi_enabled = setting('OCR_NUMERIC_ROI', '1') == '1'
-    for cell in cells:
-        if roi_enabled and cell.column_id in ('quantity','price','printed_total'):
-            if roi_seconds >= roi_limit_s:
+    if roi_enabled:
+        # The last row often carries VAT, where a misread unit price
+        # multiplies the error by the entire tax amount.
+        last_price = next((i for i in range(len(cells)-1, -1, -1)
+                           if cells[i].column_id == 'price'), None)
+        indices = list(range(len(cells)))
+        if last_price is not None:
+            indices.remove(last_price)
+            indices.insert(0, last_price)
+        for i in indices:
+            cell = cells[i]
+            if cell.column_id not in ('quantity','price','printed_total'):
+                continue
+            if roi_seconds >= crop_limit_s:
                 roi_skipped += 1
+                skipped_cells.append({'row_id':cell.row_id, 'column_id':cell.column_id})
             else:
                 started = perf_counter()
                 cropped, info = crop_numeric_ink(cell.image)
                 roi_seconds += perf_counter() - started
                 roi_metadata[(cell.row_id,cell.column_id)] = info
-                cell = replace(cell, image=cropped)
-        working.append(cell)
-    stats.update(numeric_roi_ms=round(roi_seconds*1000,3), numeric_roi_budget_ms=5,
+                working[i] = replace(cell, image=cropped)
+    crop_seconds = roi_seconds
+    stats.update(numeric_roi_ms=round(roi_seconds*1000,3),
+                 numeric_roi_enabled=roi_enabled,
+                 numeric_roi_crop_ms=round(crop_seconds*1000,3),
+                 numeric_roi_budget_ms=round(roi_limit_s*1000),
+                 numeric_roi_crop_budget_ms=round(crop_limit_s*1000),
                  numeric_roi_skipped=roi_skipped,
+                 numeric_roi_skipped_cells=skipped_cells,
+                 numeric_roi_crop_exceeded=crop_seconds > crop_limit_s,
                  numeric_roi_changed=sum(info.get('changed',False) for info in roi_metadata.values()))
     for cell in working:
         key = (cell.row_id, cell.column_id)
@@ -103,17 +125,23 @@ def read_batches(cells, *, batch_size=8):
                     out[(c.row_id,c.column_id)] = item
     # Inspect only suspicious all-numeric prices ending in 7. Correct currency
     # text needs no extra work; image evidence is required before changing a digit.
+    currency_skipped = []
     for cell in working:
         key = (cell.row_id, cell.column_id)
         raw = out[key]['text'].strip()
-        if (cell.column_id == 'price' and re.fullmatch(r'[0-9]+(?:[,.][0-9]+)?7', raw)
-                and roi_seconds < roi_limit_s):
+        if cell.column_id != 'price' or not re.fullmatch(r'[0-9]+(?:[,.][0-9]+)?7', raw):
+            continue
+        if roi_seconds >= roi_limit_s:
+            currency_skipped.append({'row_id':cell.row_id, 'column_id':cell.column_id})
+        else:
             started = perf_counter()
             _, currency = split_price_currency(cell.image)
             roi_seconds += perf_counter() - started
             if currency is not None:
                 roi_metadata.setdefault(key, {})['currency'] = currency
     stats['numeric_roi_ms'] = round(roi_seconds*1000,3)
+    stats['numeric_roi_budget_exceeded'] = roi_seconds > roi_limit_s
+    stats['numeric_roi_currency_skipped_cells'] = currency_skipped
     for key, info in roi_metadata.items():
         result = out[key]
         result['numeric_roi'] = info

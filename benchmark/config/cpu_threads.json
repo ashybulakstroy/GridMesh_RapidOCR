@@ -1,0 +1,39 @@
+{
+  "intra_op_candidates": [
+    1,
+    2,
+    3,
+    4,
+    6,
+    8
+  ],
+  "opencv_candidates": [
+    1,
+    2,
+    4
+  ],
+  "primary_models": [
+    "v6_tiny_cyrillic_optional",
+    "v5_cyrillic_mobile"
+  ],
+  "secondary_models": [
+    "v6_small_official",
+    "v6_tiny_official"
+  ],
+  "modes": [
+    "single_cell",
+    "batch"
+  ],
+  "baseline_intra_op": 2,
+  "inter_op": 1,
+  "opencv_threads": 2,
+  "batch_size": 8,
+  "warmups": 1,
+  "repeats": 5,
+  "background_cpu_threshold_percent": 30,
+  "winner_policy": "per_model_and_mode_sum_of_receipt_ocr_medians_no_accuracy_regression",
+  "crop_source": "gridmesh_total",
+  "scope": "quick",
+  "text_scope": "All product names: mixed Cyrillic and Latin, digits and punctuation",
+  "secondary_field_scope": "numeric_only"
+}

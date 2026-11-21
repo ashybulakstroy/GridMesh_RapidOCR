@@ -1,0 +1,37 @@
+{
+  "schema_version": "1.0",
+  "receipt_id": "short_01_1542440320",
+  "size_class": "short",
+  "source_image": "image(20261118-103142).png",
+  "source_note": "Фотография была предоставлена пользователем ранее. ФАЙЛ ИЗОБРАЖЕНИЯ НЕ ВХОДИТ в этот ZIP. Положить исходник с указанным именем в benchmark/data/images/.",
+  "document_title": "Тапсырыс №1542440320",
+  "printed_date": "2026-11-18",
+  "printed_time": "10:44",
+  "currency": "KZT",
+  "ground_truth_status": "DRAFT_VISUAL_TRANSCRIPTION",
+  "approved_by_user": false,
+  "review_note": "Цифры и арифметика сверены по изображению; номенклатурные названия, особенно отмеченные name_needs_review, требуют посимвольной проверки человеком. До утверждения не публиковать окончательную метрику текстовой точности.",
+  "products": [
+    {
+      "row_no": 1,
+      "kind": "product",
+      "name": "Дверь наружная Толстяк Букле Черный Белый ясень 9см 86 правый 49826",
+      "quantity": "1",
+      "unit_price": "128000",
+      "calculated_amount": "128000",
+      "name_needs_review": true
+    }
+  ],
+  "vat_row": {
+    "kind": "vat",
+    "printed_label": "НДС 16 %",
+    "printed_quantity": "20480",
+    "printed_unit_price": "1",
+    "amount": "20480"
+  },
+  "printed_total": "148480",
+  "expected_product_count": 1,
+  "expected_special_row_count": 1,
+  "derived_products_subtotal": "128000",
+  "amount_definition": "quantity * unit_price: вычисляемое значение, не отдельная напечатанная колонка чека"
+}

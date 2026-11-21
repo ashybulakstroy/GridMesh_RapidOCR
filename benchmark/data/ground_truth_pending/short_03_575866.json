@@ -1,0 +1,55 @@
+{
+  "schema_version": "1.0",
+  "receipt_id": "short_03_575866",
+  "size_class": "short",
+  "source_image": "image(20261115-124303).png",
+  "source_note": "Фотография была предоставлена пользователем ранее. ФАЙЛ ИЗОБРАЖЕНИЯ НЕ ВХОДИТ в этот ZIP. Положить исходник с указанным именем в benchmark/data/images/.",
+  "document_title": "Заказ №575866",
+  "printed_date": "2026-11-13",
+  "printed_time": "14:51",
+  "currency": "KZT",
+  "ground_truth_status": "DRAFT_VISUAL_TRANSCRIPTION",
+  "approved_by_user": false,
+  "review_note": "Цифры и арифметика сверены по изображению; номенклатурные названия, особенно отмеченные name_needs_review, требуют посимвольной проверки человеком. До утверждения не публиковать окончательную метрику текстовой точности.",
+  "products": [
+    {
+      "row_no": 1,
+      "kind": "product",
+      "name": "Диск пильный по дереву 185x20мм 60T TULEX",
+      "quantity": "1",
+      "unit_price": "4000",
+      "calculated_amount": "4000",
+      "name_needs_review": true
+    },
+    {
+      "row_no": 2,
+      "kind": "product",
+      "name": "Дисковая Пила CROWN Ø185 CT15074",
+      "quantity": "1",
+      "unit_price": "31600",
+      "calculated_amount": "31600",
+      "name_needs_review": true
+    },
+    {
+      "row_no": 3,
+      "kind": "product",
+      "name": "Шуруп Крупный Шаг 70",
+      "quantity": "10",
+      "unit_price": "400",
+      "calculated_amount": "4000",
+      "name_needs_review": false
+    }
+  ],
+  "vat_row": {
+    "kind": "vat",
+    "printed_label": "НДС 16 %",
+    "printed_quantity": "6336",
+    "printed_unit_price": "1",
+    "amount": "6336"
+  },
+  "printed_total": "45936",
+  "expected_product_count": 3,
+  "expected_special_row_count": 1,
+  "derived_products_subtotal": "39600",
+  "amount_definition": "quantity * unit_price: вычисляемое значение, не отдельная напечатанная колонка чека"
+}

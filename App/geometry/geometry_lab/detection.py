@@ -28,12 +28,17 @@ def _clusters(parts, tolerance):
     return groups
 
 
-def _candidate_lines(gray, axis):
-    h,w=gray.shape
+def _line_binary(gray):
     # Both adaptive and global contrast; expose missing rather than inventing separators.
     boosted=cv2.createCLAHE(clipLimit=2.0,tileGridSize=(8,8)).apply(gray)
-    binary=cv2.adaptiveThreshold(cv2.GaussianBlur(boosted,(3,3),0),255,
-              cv2.ADAPTIVE_THRESH_GAUSSIAN_C,cv2.THRESH_BINARY_INV,31,8)
+    return cv2.adaptiveThreshold(cv2.GaussianBlur(boosted,(3,3),0),255,
+                                 cv2.ADAPTIVE_THRESH_GAUSSIAN_C,cv2.THRESH_BINARY_INV,31,8)
+
+
+def _candidate_lines(gray, axis, *, binary=None):
+    h,w=gray.shape
+    if binary is None:
+        binary=_line_binary(gray)
     if axis=="v":
         k=cv2.getStructuringElement(cv2.MORPH_RECT,(1,max(9,h//120)))
         min_length=max(24,h//22)
@@ -90,9 +95,11 @@ def _fit_group(group, axis, shape):
                 (float(np.min(along)),float(np.max(along))))
 
 
-def _group_and_fit(gray,axis):
+def _group_and_fit(gray,axis, *, segments=None):
     h,w=gray.shape
-    grouped=_clusters(_candidate_lines(gray,axis),max(5,(w if axis=="v" else h)*.012))
+    if segments is None:
+        segments=_candidate_lines(gray,axis)
+    grouped=_clusters(segments,max(5,(w if axis=="v" else h)*.012))
     output=[]
     for g in grouped:
         rule=_fit_group(g,axis,(h,w))

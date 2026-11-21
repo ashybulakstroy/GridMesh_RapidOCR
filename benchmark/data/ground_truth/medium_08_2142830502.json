@@ -1,0 +1,107 @@
+{
+  "schema_version": "1.0",
+  "receipt_id": "medium_08_2142830502",
+  "size_class": "medium",
+  "source_image": "receipt_2142830502.jpg",
+  "source_note": "Оригинал из App/tests; текст сверяется с benchmark/data/images/receipt_2142830502.jpg. Координаты ROI не изменялись.",
+  "document_title": "Тапсырыс №2142830502",
+  "printed_date": "2026-11-18",
+  "printed_time": "11:49",
+  "currency": "KZT",
+  "ground_truth_status": "AGENT_VERIFIED_VISUAL_TRANSCRIPTION",
+  "approved_by_user": false,
+  "review_note": "Все 8 названий и строка НДС сверены агентом с увеличенным оригиналом. approved_by_user=false. Оценка текста разрешена как AGENT_VERIFIED.",
+  "products": [
+    {
+      "row_no": 1,
+      "kind": "product",
+      "name": "Автомат F34332 EZ9 ВА 3ф 32А 4,5кА SchnEl",
+      "quantity": "1",
+      "unit_price": "6650",
+      "calculated_amount": "6650",
+      "name_needs_review": false
+    },
+    {
+      "row_no": 2,
+      "kind": "product",
+      "name": "Дождевик H996/WX-2236 EVA",
+      "quantity": "10",
+      "unit_price": "1200",
+      "calculated_amount": "12000",
+      "name_needs_review": false
+    },
+    {
+      "row_no": 3,
+      "kind": "product",
+      "name": "Кабель ВВГ нг 2х6 (SM Kablo, UNEL kabla,AK kablo,LS ) ГОСТ",
+      "quantity": "30",
+      "unit_price": "1225",
+      "calculated_amount": "36750",
+      "name_needs_review": false
+    },
+    {
+      "row_no": 4,
+      "kind": "product",
+      "name": "КИСТЬ ПЛОСКАЯ \"UNIVERSAL-STANDARD\" 50мм STAYER @",
+      "quantity": "10",
+      "unit_price": "360",
+      "calculated_amount": "3600",
+      "name_needs_review": false
+    },
+    {
+      "row_no": 5,
+      "kind": "product",
+      "name": "ЛЕПЕСТКОВЫЙ ДИСК КЛТ1 Ø125 (60) ЗУБР @",
+      "quantity": "5",
+      "unit_price": "580",
+      "calculated_amount": "2900",
+      "name_needs_review": false
+    },
+    {
+      "row_no": 6,
+      "kind": "product",
+      "name": "Мешок 50 кг зеленый ОФИЦИАЛ",
+      "quantity": "20",
+      "unit_price": "55",
+      "calculated_amount": "1100",
+      "name_needs_review": false
+    },
+    {
+      "row_no": 7,
+      "kind": "product",
+      "name": "Перчатки 1000 гр (красные) -10 пар в пачке",
+      "quantity": "100",
+      "unit_price": "150",
+      "calculated_amount": "15000",
+      "name_needs_review": false
+    },
+    {
+      "row_no": 8,
+      "kind": "product",
+      "name": "Щетка латунированная VOLAT",
+      "quantity": "5",
+      "unit_price": "540",
+      "calculated_amount": "2700",
+      "name_needs_review": false
+    }
+  ],
+  "vat_row": {
+    "kind": "vat",
+    "printed_label": "НДС 16 %",
+    "printed_quantity": "12912",
+    "printed_unit_price": "1",
+    "amount": "12912"
+  },
+  "printed_total": "93612",
+  "expected_product_count": 8,
+  "expected_special_row_count": 1,
+  "derived_products_subtotal": "80700",
+  "amount_definition": "quantity * unit_price: вычисляемое значение, не отдельная напечатанная колонка чека",
+  "verification": {
+    "numeric_verified_by_agent": true,
+    "names_verified_by_agent": true,
+    "verified_at": "2026-11-21",
+    "method": "Посимвольная визуальная сверка увеличенной области оригинального JPEG; переносы объединены; без исправления текста по OCR или каталогу.",
+    "note": "Латинские и кириллические омоглифы в артикулах визуально неразличимы; используется явно зафиксированная транскрипция. Финальное утверждение владельцем не выставлено."
+  }
+}

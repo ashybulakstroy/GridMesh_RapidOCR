@@ -7,3 +7,10 @@ data/input/*
 data/output/*
 data/experiment_backups/
 experiment_outputs/
+.vscode/
+data/diagnostics/
+data/server.*.log
+benchmark/data/output/*
+!benchmark/data/output/.gitkeep
+benchmark/reports/*
+!benchmark/reports/.gitkeep

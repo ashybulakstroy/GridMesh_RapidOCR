@@ -1,0 +1,127 @@
+{
+  "schema_version": "1.0",
+  "receipt_id": "long_11_2142822722",
+  "size_class": "long",
+  "source_image": "image(20261116-151722).png",
+  "source_note": "Фотография была предоставлена пользователем ранее. ФАЙЛ ИЗОБРАЖЕНИЯ НЕ ВХОДИТ в этот ZIP. Положить исходник с указанным именем в benchmark/data/images/.",
+  "document_title": "Тапсырыс №2142822722",
+  "printed_date": "2026-11-13",
+  "printed_time": "12:39",
+  "currency": "KZT",
+  "ground_truth_status": "DRAFT_VISUAL_TRANSCRIPTION",
+  "approved_by_user": false,
+  "review_note": "Цифры и арифметика сверены по изображению; номенклатурные названия, особенно отмеченные name_needs_review, требуют посимвольной проверки человеком. До утверждения не публиковать окончательную метрику текстовой точности.",
+  "products": [
+    {
+      "row_no": 1,
+      "kind": "product",
+      "name": "PPR Муфта Ø25",
+      "quantity": "10",
+      "unit_price": "60",
+      "calculated_amount": "600",
+      "name_needs_review": false
+    },
+    {
+      "row_no": 2,
+      "kind": "product",
+      "name": "PPR Отвод Ø25",
+      "quantity": "10",
+      "unit_price": "70",
+      "calculated_amount": "700",
+      "name_needs_review": false
+    },
+    {
+      "row_no": 3,
+      "kind": "product",
+      "name": "TYTAN силикон санитарный (310/280 мл) бесцветный",
+      "quantity": "10",
+      "unit_price": "2920",
+      "calculated_amount": "29200",
+      "name_needs_review": true
+    },
+    {
+      "row_no": 4,
+      "kind": "product",
+      "name": "Заглушка ППР серый 25 Jakko",
+      "quantity": "10",
+      "unit_price": "70",
+      "calculated_amount": "700",
+      "name_needs_review": true
+    },
+    {
+      "row_no": 5,
+      "kind": "product",
+      "name": "КРЕСТИКИ ДЛЯ КАФЕЛЬНОЙ ПЛИТКИ 200шт 2мм STAYER @",
+      "quantity": "2",
+      "unit_price": "350",
+      "calculated_amount": "700",
+      "name_needs_review": true
+    },
+    {
+      "row_no": 6,
+      "kind": "product",
+      "name": "Маркер Перманентный Красный",
+      "quantity": "2",
+      "unit_price": "100",
+      "calculated_amount": "200",
+      "name_needs_review": false
+    },
+    {
+      "row_no": 7,
+      "kind": "product",
+      "name": "Маркер Перманентный Черный",
+      "quantity": "2",
+      "unit_price": "50",
+      "calculated_amount": "100",
+      "name_needs_review": false
+    },
+    {
+      "row_no": 8,
+      "kind": "product",
+      "name": "Пистолет для герметика ЕРА (EPG-01)",
+      "quantity": "2",
+      "unit_price": "1650",
+      "calculated_amount": "3300",
+      "name_needs_review": true
+    },
+    {
+      "row_no": 9,
+      "kind": "product",
+      "name": "Пластиковый кран ППР 25\" Макро",
+      "quantity": "10",
+      "unit_price": "1750",
+      "calculated_amount": "17500",
+      "name_needs_review": true
+    },
+    {
+      "row_no": 10,
+      "kind": "product",
+      "name": "Рулетка 5мх19мм, двухкомп. корпус, кнопка пауза//Denzel",
+      "quantity": "1",
+      "unit_price": "2250",
+      "calculated_amount": "2250",
+      "name_needs_review": true
+    },
+    {
+      "row_no": 11,
+      "kind": "product",
+      "name": "Сердцевина 60 К/К KD (серый) ЗУБЕР / APS",
+      "quantity": "10",
+      "unit_price": "830",
+      "calculated_amount": "8300",
+      "name_needs_review": true
+    }
+  ],
+  "vat_row": {
+    "kind": "vat",
+    "printed_label": "НДС 16 %",
+    "printed_quantity": "10168",
+    "printed_unit_price": "1",
+    "amount": "10168"
+  },
+  "printed_total": "73718",
+  "expected_product_count": 11,
+  "expected_special_row_count": 1,
+  "derived_products_subtotal": "63550",
+  "amount_definition": "quantity * unit_price: вычисляемое значение, не отдельная напечатанная колонка чека"
+}

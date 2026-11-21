@@ -16,6 +16,7 @@ from .ocr.engine import read_cell, read_full, read_line
 from .ocr.p1_batch import BatchCell, read_batches
 from .ocr.p1_numbers import parse_number
 from .ocr.p1_recovery import recover_invalid_and_rows, recover_total_mismatch
+from .ocr.p1_double_retry import retry_suspect_cells
 from .config import positive_int, setting, ROOT
 from .ocr.ocr_performance import OCRPerformance
 
@@ -23,6 +24,40 @@ from .ocr.ocr_performance import OCRPerformance
 def number(text):
     # P1: reject ambiguous/malformed digits instead of silently deleting OCR characters.
     return parse_number(text)
+
+
+def log_budget_events(log, stats, stage):
+    if not stats:
+        return
+    skipped = stats.get('numeric_roi_skipped_cells', [])
+    currency_skipped = stats.get('numeric_roi_currency_skipped_cells', [])
+    if stats.get('numeric_roi_crop_exceeded') or skipped:
+        log.append({'type':'budget', 'stage':stage, 'kind':'crop',
+                    'limit_ms':stats['numeric_roi_crop_budget_ms'],
+                    'elapsed_ms':stats['numeric_roi_crop_ms'],
+                    'exceeded':stats['numeric_roi_crop_exceeded'], 'skipped_cells':skipped,
+                    'message':f"{stage}: подготовка {stats['numeric_roi_crop_ms']:.3f} мс "
+                              f"при лимите {stats['numeric_roi_crop_budget_ms']} мс, "
+                              f"пропущено ячеек: {len(skipped)}."})
+    if stats.get('numeric_roi_budget_exceeded') or currency_skipped:
+        log.append({'type':'budget', 'stage':stage, 'kind':'total',
+                    'limit_ms':stats['numeric_roi_budget_ms'],
+                    'elapsed_ms':stats['numeric_roi_ms'],
+                    'exceeded':stats['numeric_roi_budget_exceeded'],
+                    'skipped_cells':currency_skipped,
+                    'message':f"{stage}: общий бюджет {stats['numeric_roi_ms']:.3f} мс "
+                              f"при лимите {stats['numeric_roi_budget_ms']} мс, "
+                              f"пропущено проверок валюты: {len(currency_skipped)}."})
+
+
+def log_retry_details(log, recovery, stage):
+    labels = {'quantity':'количество', 'price':'цена', 'printed_total':'сумма строки'}
+    for attempt in recovery.get('details', []):
+        field = labels.get(attempt['column_id'], attempt['column_id'])
+        outcome = 'принято' if attempt['accepted'] else 'оставлено исходное значение'
+        log.append({'type':'retry', 'stage':stage, **attempt,
+                    'message':f"{stage}: строка {attempt['row_id']}, {field}: "
+                              f"«{attempt['original_text']}» → «{attempt['alternative_text']}»; {outcome}."})
 
 
 
@@ -93,6 +128,7 @@ def recover_tax_below_grid(image, rect, columns, row_id):
     if not marker or marker['confidence'] < .65 or not is_footer_label(marker['text']):
         return None
     cells = {}
+    numeric_crops = {}
     for field in ('name', 'quantity', 'price'):
         band = name_band if field == 'name' else observed_band(field)
         if band is None:
@@ -102,6 +138,8 @@ def recover_tax_below_grid(image, rect, columns, row_id):
             return None
         if field != 'name' and number(result['text']) is None:
             return None
+        if field != 'name':
+            numeric_crops[field] = band[0]
         box = band[1]
         cells[field] = {'text':result['text'], 'confidence':result['confidence'],
                         'bbox':[min(p[0] for p in box),min(p[1] for p in box),
@@ -114,7 +152,7 @@ def recover_tax_below_grid(image, rect, columns, row_id):
     q,p = number(cells['quantity']['text']),number(cells['price']['text'])
     bottom = int(max(point[1] for cell in cells.values() for point in cell['source_bbox']) + 1)
     return {'row_id':row_id, 'kind':'tax', 'cells':cells, 'line_total':str(q*p),
-            'printed_line_total':None, 'printed_line_match':None}, bottom, marker
+            'printed_line_total':None, 'printed_line_match':None}, bottom, marker, numeric_crops
 
 
 def process(data, publish=None, job_id=None, *, rectify=False):
@@ -127,6 +165,7 @@ def process(data, publish=None, job_id=None, *, rectify=False):
     job_dir = output_dir / job_id
     job_dir.mkdir(parents=True, exist_ok=False)
     profile = OCRPerformance(publish)
+    profile.processing_log = []
     try:
         profile.phase('Сохранение исходного изображения')
         (job_dir/'input.bin').write_bytes(data)
@@ -136,7 +175,11 @@ def process(data, publish=None, job_id=None, *, rectify=False):
             (job_dir/f'{key}.png').write_bytes(base64.b64decode(result[key].split(',', 1)[1]))
     except Exception as exc:
         failure_profile = profile.finish()
+        profile.processing_log.append({'type':'error', 'stage':'Обработка',
+                                       'message':f'Обработка завершилась ошибкой: {type(exc).__name__}: {exc}'})
+        failure_profile['budget_events'] = [event for event in profile.processing_log if event['type'] == 'budget']
         (job_dir/'performance_profile.json').write_text(json.dumps(failure_profile, ensure_ascii=False, indent=2), encoding='utf-8')
+        (job_dir/'processing_log.json').write_text(json.dumps(profile.processing_log, ensure_ascii=False, indent=2), encoding='utf-8')
         (job_dir/'error.json').write_text(json.dumps({'error':str(exc)}, ensure_ascii=False, indent=2), encoding='utf-8')
         raise
     performance = profile.finish()
@@ -144,8 +187,11 @@ def process(data, publish=None, job_id=None, *, rectify=False):
     result['job_id'] = job_id
     result['job_directory'] = str(job_dir.relative_to(ROOT)).replace('\\', '/')
     result['performance_file'] = f"{result['job_directory']}/performance_profile.json"
+    result['processing_log_file'] = f"{result['job_directory']}/processing_log.json"
     result['timings']['total_s'] = round(performance['wall_ms']/1000, 3)
+    performance['budget_events'] = [event for event in result['processing_log'] if event['type'] == 'budget']
     (job_dir/'performance_profile.json').write_text(json.dumps(performance, ensure_ascii=False, indent=2), encoding='utf-8')
+    (job_dir/'processing_log.json').write_text(json.dumps(result['processing_log'], ensure_ascii=False, indent=2), encoding='utf-8')
     receipt = {key:value for key,value in result.items() if key not in ('original', 'rectified')}
     (job_dir/'receipt.json').write_text(json.dumps(receipt, ensure_ascii=False, indent=2), encoding='utf-8')
     return result
@@ -153,6 +199,7 @@ def process(data, publish=None, job_id=None, *, rectify=False):
 
 def _process(data, profile, job_dir, rectify):
     started = time.perf_counter()
+    processing_log = profile.processing_log
     profile.phase('Подготовка и ориентация изображения')
     with Image.open(BytesIO(data)) as photo:
         if photo.width * photo.height > 25_000_000: raise ValueError('Слишком большое изображение')
@@ -175,6 +222,21 @@ def _process(data, profile, job_dir, rectify):
                 break
             x0,x1 = int(rect.xs[0]),int(rect.xs[-1])
             y0,y1 = int(rect.ys[0]),int(rect.ys[1])
+            # Grid cells already locate header text: try recognition without
+            # a full text detector before constructing the opposite orientation.
+            header=[]
+            for column in range(1,len(rect.xs)-1):
+                crop,_,_=cell_crop(rect,0,column)
+                line=read_line(crop)
+                if line:header.append(line)
+            words=' '.join(line['text'].casefold() for line in header)
+            roles=sum(any(token in words for token in group) for group in
+                      (('атау','наимен','назван'),('саны','колич','кол-во'),('баға','бага','цена')))
+            confidence=sum(line['confidence'] for line in header)/max(1,len(header))
+            if roles>=2 and confidence>=.80:
+                geometry['orientation']={'method':'observed_header_cells','roles':roles,'confidence':confidence}
+                options.append((roles+confidence*.1,oriented,rect,overlay,geometry))
+                break
             header = read_full(rect.image[y0:y1, x0:x1])
             words = ' '.join(line['text'].casefold() for line in header)
             known = sum(token in words for token in ('атау', 'наимен', 'саны', 'кол', 'баға', 'цена'))
@@ -185,6 +247,10 @@ def _process(data, profile, job_dir, rectify):
     if not options:
         raise ValueError('Не удалось построить сетку: ' + '; '.join(failures))
     score, image, rect, overlay, geometry = max(options, key=lambda item: item[0])
+    if geometry.get('fold_recovered_horizontal'):
+        count = geometry['fold_recovered_horizontal']
+        processing_log.append({'type':'operation', 'stage':'Построение сетки',
+                               'message':f'Восстановлены линии сетки у перегиба: {count}.'})
     if len(candidates)>1 and score < 1:
         geometry['warnings'].append('Ориентация не подтверждена по заголовку; проверьте фото.')
     (job_dir/'rectified.png').write_bytes(cv2.imencode('.png', overlay)[1].tobytes())
@@ -235,8 +301,11 @@ def _process(data, profile, job_dir, rectify):
     profile.phase('OCR P1: пакетный RapidOCR')
     readouts, batch_stats = read_batches(cell_requests, batch_size=positive_int('OCR_REC_BATCH_NUM',8))
     geometry['ocr_batch'] = batch_stats
+    log_budget_events(processing_log, batch_stats, 'Первичная подготовка')
     if batch_stats['batch_fallback']:
         geometry['warnings'].append('Пакетный OCR был частично заменён поячейковым: ' + '; '.join(batch_stats['errors'][:2]))
+        processing_log.append({'type':'operation', 'stage':'Пакетный OCR',
+                               'message':f"Пакетный OCR заменён поячейковым для {batch_stats['batch_fallback']} ячеек."})
     profile.phase('OCR P1: сборка товарных строк')
     for idx in range(1, body_row_count+1):
         k = columns['number']
@@ -273,13 +342,21 @@ def _process(data, profile, job_dir, rectify):
     retry_budget = positive_int('OCR_P1_MAX_RETRIES', 4)
     initial_recovery = recover_invalid_and_rows(rows,crop_map,max_retries=retry_budget)
     geometry['ocr_recovery'] = {'initial':initial_recovery}
+    log_retry_details(processing_log, initial_recovery, 'Первичная проверка чисел')
     recovered_tax_bottom = None
     if not any(row['kind'] == 'tax' for row in rows):
         profile.phase('Проверка строки НДС под сеткой')
         recovered_tax = recover_tax_below_grid(image, rect, columns, len(rows)+1)
         if recovered_tax:
-            row, recovered_tax_bottom, footer_marker = recovered_tax
+            row, recovered_tax_bottom, footer_marker, tax_crops = recovered_tax
             rows.append(row)
+            for field, crop in tax_crops.items():
+                cell = row['cells'][field]
+                cell_requests.append(BatchCell(crop, row['row_id'], field,
+                                               tuple(cell['bbox'][:2]), cell['source_bbox']))
+                crop_map[(row['row_id'],field)] = crop
+            processing_log.append({'type':'operation', 'stage':'Проверка НДС',
+                                   'message':'Строка НДС найдена под границей сетки.'})
             geometry['footer_marker'] = footer_marker
             geometry['warnings'].append('Строка НДС прочитана под границей сетки; проверьте её расположение и данные.')
             # Show the independently read band below the existing mesh in a
@@ -395,10 +472,64 @@ def _process(data, profile, job_dir, rectify):
                 total, footer_lines = second_total, second_lines
     # Only investigate footer mismatch AFTER normal OCR; never invent numbers.
     profile.phase('OCR P1: проверка напечатанного итога')
+    expected_total = number(total)
+    missing_total = expected_total is None
+    incomplete_before = any(row['line_total'] is None for row in rows)
+    before_sum = sum((Decimal(row['line_total']) for row in rows if row['line_total'] is not None), Decimal(0))
+    receipt_mismatch = expected_total is not None and (incomplete_before or abs(before_sum-expected_total) > Decimal('0.01'))
+    row_mismatch = any(row.get('printed_line_match') is False for row in rows)
+    taxes_before = [row for row in rows if row['kind'] == 'tax']
+    vat_rate = Decimal(setting('OCR_VAT_RATE_PERCENT', '16'))
+    products_before = sum((Decimal(row['line_total']) for row in rows
+                           if row['kind'] == 'product' and row['line_total'] is not None), Decimal(0))
+    tax_before = sum((Decimal(row['line_total']) for row in taxes_before if row['line_total'] is not None), Decimal(0))
+    vat_mismatch = bool(taxes_before and not incomplete_before and
+                        abs(tax_before-products_before*vat_rate/100) > Decimal('1'))
+    budget_limited = bool(batch_stats.get('numeric_roi_crop_exceeded') or
+                          batch_stats.get('numeric_roi_budget_exceeded') or
+                          batch_stats.get('numeric_roi_skipped_cells') or
+                          batch_stats.get('numeric_roi_currency_skipped_cells'))
+    low_confidence = any(float(row['cells'][field].get('confidence') or 0) < .80
+                         for row in rows for field in ('quantity', 'price'))
+    retry_required = (incomplete_before or receipt_mismatch or row_mismatch or vat_mismatch or
+                      missing_total or (budget_limited and low_confidence))
+    expanded_recovery = {'attempted':0, 'details':[], 'changed':[], 'candidates':[], 'batch':None}
+    if retry_required:
+        processing_log.append({'type':'check', 'stage':'Контроль сумм',
+                               'printed_total':str(expected_total) if expected_total is not None else None,
+                               'computed_total':str(before_sum), 'incomplete':incomplete_before,
+                               'receipt_mismatch':receipt_mismatch, 'row_mismatch':row_mismatch,
+                               'vat_mismatch':vat_mismatch, 'missing_total':missing_total,
+                               'budget_limited':budget_limited, 'low_confidence':low_confidence,
+                               'message':f'Контроль сумм: напечатано {total if total is not None else "не распознано"}, рассчитано {before_sum}; '
+                                         f'неполных строк: {sum(row["line_total"] is None for row in rows)}; '
+                                         f'НДС {"не совпадает" if vat_mismatch else "проверен или недоступен"}; '
+                                         f'итоги строк {"не совпадают" if row_mismatch else "без выявленных расхождений"}; '
+                                         f'{"есть числа с низкой уверенностью после исчерпания бюджета" if budget_limited and low_confidence else "проверка чисел завершена"}.'})
+        profile.phase('OCR P1: повтор проблемных ячеек с удвоенным бюджетом')
+        try:
+            expanded_recovery = retry_suspect_cells(
+                rows, cell_requests, batch_stats, expected_total, vat_rate,
+                batch_size=positive_int('OCR_REC_BATCH_NUM',8))
+            processing_log.append({'type':'operation', 'stage':'Повтор с удвоенным бюджетом',
+                                   'attempted':expanded_recovery['attempted'],
+                                   'message':f"Повтор с удвоенным бюджетом: проверено ячеек "
+                                             f"{expanded_recovery['attempted']}; бюджет 24 + 8 мс."})
+            if expanded_recovery['batch'] and not expanded_recovery['batch']['numeric_roi_enabled']:
+                processing_log.append({'type':'warning', 'stage':'Повтор с удвоенным бюджетом',
+                                       'message':'Подготовка числовых ячеек отключена настройкой OCR_NUMERIC_ROI.'})
+            log_budget_events(processing_log, expanded_recovery['batch'], 'Повтор с удвоенным бюджетом')
+            log_retry_details(processing_log, expanded_recovery, 'Повтор с удвоенным бюджетом')
+        except Exception as exc:
+            processing_log.append({'type':'error', 'stage':'Повтор с удвоенным бюджетом',
+                                   'message':f'Повтор не выполнен: {type(exc).__name__}: {exc}'})
+        profile.phase('OCR P1: дополнительная проверка итога')
+    geometry['ocr_recovery']['double_budget'] = expanded_recovery
     footer_recovery = recover_total_mismatch(rows,crop_map,number(total),
         max_retries=max(0,retry_budget-initial_recovery['attempted']))
     geometry['ocr_recovery']['footer'] = footer_recovery
-    if initial_recovery['candidates'] or footer_recovery['candidates']:
+    log_retry_details(processing_log, footer_recovery, 'Дополнительная проверка итога')
+    if initial_recovery['candidates'] or expanded_recovery['candidates'] or footer_recovery['candidates']:
         geometry['warnings'].append('Есть альтернативные варианты OCR чисел, требующие проверки.')
     invalid_printed = [r['row_id'] for r in rows if r.get('printed_line_match') is False]
     if invalid_printed:
@@ -422,8 +553,14 @@ def _process(data, profile, job_dir, rectify):
     taxes = [r for r in rows if r['kind'] == 'tax']
     product_sum = sum((Decimal(r['line_total']) for r in rows if r['kind'] == 'product' and r['line_total'] is not None), Decimal(0))
     vat_sum = sum((Decimal(r['line_total']) for r in taxes if r['line_total'] is not None), Decimal(0))
-    vat_rate = Decimal(setting('OCR_VAT_RATE_PERCENT', '16'))
     vat_ok = None if not taxes or incomplete else abs(vat_sum-product_sum*vat_rate/100) <= Decimal('1')
+    if retry_required:
+        processing_log.append({'type':'check', 'stage':'Итоговая проверка',
+                               'computed_total':str(computed), 'math_match':match,
+                               'vat_match':vat_ok,
+                               'message':f"Итоговая проверка: сумма {computed}, "
+                                         f"{'совпадает' if match else 'требует проверки'}; "
+                                         f"НДС {'совпадает' if vat_ok is True else 'требует проверки'}."})
     if incomplete: geometry['warnings'].append('Есть ячейки с нераспознанным количеством или ценой.')
     if total is None: geometry['warnings'].append('Печатный итог не найден; проверьте вручную.')
     elif not match: geometry['warnings'].append('Сумма строк не совпадает с печатным итогом.')
@@ -432,6 +569,7 @@ def _process(data, profile, job_dir, rectify):
     np.savez_compressed(map_path, map_x=rect.map_x, map_y=rect.map_y)
     geometry['inverse_map'] = str(map_path.relative_to(ROOT)).replace('\\', '/')
     return {'status': 'review' if geometry['warnings'] else 'ok', 'geometry': geometry,
+            'processing_log': processing_log,
             'original': png(image), 'rectified': png(overlay), 'rows': rows,
             'numeric_issues': numeric_issues,
             'total': total, 'computed_total': str(computed), 'math_match': match,

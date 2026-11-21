@@ -1,0 +1,46 @@
+{
+  "protocol": "5.0",
+  "scope": "quick",
+  "repeat_count": 5,
+  "warmups": 1,
+  "runs_are_local_only": true,
+  "model_ids": [
+    "v5_cyrillic_mobile",
+    "v6_tiny_official",
+    "v6_small_official",
+    "v6_tiny_cyrillic_optional"
+  ],
+  "modes": [
+    "single_cell",
+    "batch"
+  ],
+  "batch_size": 8,
+  "onnx_intra_threads": 2,
+  "onnx_inter_threads": 1,
+  "opencv_threads": 2,
+  "quick_receipt_ids": [
+    "short_01_2142701072",
+    "short_02_2142701789",
+    "medium_08_2142830502"
+  ],
+  "parameters_for_later_sweep": {
+    "onnx_intra_threads": [
+      1,
+      2,
+      4
+    ],
+    "opencv_threads": [
+      1,
+      2
+    ],
+    "batch_size": [
+      1,
+      2,
+      4,
+      8,
+      16
+    ]
+  },
+  "no_full_sweep_without_permission": true,
+  "note": "Чеки на 1, 2 и 8 товаров; средний чек и разметка имеют черновой статус. Чек на 19 товаров исключён по просьбе пользователя."
+}

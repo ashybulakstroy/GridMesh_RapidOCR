@@ -45,3 +45,41 @@ def test_nearby_ridge_does_not_invent_line_without_ink():
     assert result is candidate
     assert checked is observation
     assert not checked['accepted']
+
+
+def test_short_grid_fast_path_rejects_weak_edges_and_competing_lines():
+    from App.geometry.geometry_lab.physical_grid_graph_v3 import _complete_short_grid
+    horizontal = [Rule('h', np.array([float(y)]), float(y), 1., (20,225))
+                  for y in (20,60,110,170)]
+    edge = {'ink_coverage':.95, 'column_coverage':[.95]*4,
+            'intersection_evidence':[True]*5, 'longest_unsupported_fraction':.02}
+    data = {'horizontal':horizontal, 'vertical':[object()]*5}
+    report = {'vertical_fallback':False, 'vertical_table_local_refit':True,
+              'edges':[edge.copy() for _ in range(4)], 'rejected':[]}
+    assert _complete_short_grid(data,report)
+    report['edges'][1] = {**edge,'column_coverage':[.95,.95,.2,.95]}
+    assert not _complete_short_grid(data,report)
+    report['edges'][1] = edge.copy()
+    report['rejected'] = [{'position':85,'ink_coverage':.7,'intersection_evidence':[True]*4}]
+    assert not _complete_short_grid(data,report)
+
+def test_left_folded_receipt_corner_follows_printed_line():
+    import cv2
+    from pathlib import Path
+    image = cv2.imread(str(Path(__file__).parent / 'fixtures/receipt_253309.jpg'))
+    result, _, info = service.build_grid(image)
+    point = service.cell_polygon(result, 0, 0)[0] + result.info['source_offset']
+    assert 154 <= point[0] <= 166
+    assert 258 <= point[1] <= 268
+    assert info['left_recovered_horizontal'] >= 3
+
+
+def test_left_recovery_ignores_empty_image():
+    from App.geometry.fold import recover_left_edges
+    img = np.full((300, 400, 3), 255, dtype=np.uint8)
+    v = [Rule('v', np.array([float(x)]), float(x), 1., (20, 280)) for x in (20, 60, 200, 270, 370)]
+    h = [Rule('h', np.array([float(y)]), float(y), 1., (20, 370)) for y in (30, 80, 130, 180, 230)]
+    data = {'vertical': v, 'horizontal': h}
+    result, count = recover_left_edges(img, data)
+    assert result is data
+    assert count == 0

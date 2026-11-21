@@ -1,0 +1,35 @@
+[
+  {
+    "receipt_id": "short_01_2142701072",
+    "file": "1000696512.jpg",
+    "sha256": "69bcc1ca7067778692ca1ffd58b3736621111c2a28b882c94374303b4214c325",
+    "bytes": 175983,
+    "width": 864,
+    "height": 1536,
+    "rois": 7,
+    "image_is_original": true,
+    "gt_approved": false
+  },
+  {
+    "receipt_id": "short_02_2142701789",
+    "file": "1000697084.jpg",
+    "sha256": "94761b2fadba0ca754ce004aff277c0fea4785df8334d2086313a6db20ad0636",
+    "bytes": 135792,
+    "width": 864,
+    "height": 1536,
+    "rois": 10,
+    "image_is_original": true,
+    "gt_approved": false
+  },
+  {
+    "receipt_id": "long_19_2142701012",
+    "file": "1000696513.jpg",
+    "sha256": "27b89a5a414de8bd46b971281b4d78d72595c6f22422be86576f627cd442b34e",
+    "bytes": 214639,
+    "width": 864,
+    "height": 1536,
+    "rois": 61,
+    "image_is_original": true,
+    "gt_approved": false
+  }
+]

@@ -6,7 +6,7 @@ warpers and V1 are retained verbatim for the diagnostic comparison.
 import cv2
 import numpy as np
 from scipy.signal import find_peaks
-from .detection import _candidate_lines,_group_and_fit,_choose_verticals,_fit_group,_clusters,Rule
+from .detection import _candidate_lines,_group_and_fit,_choose_verticals,_fit_group,_clusters,_line_binary,Rule
 from .physical_grid_graph import connected_fragments,graph_verticals
 from .structure_diagnostics import PolylineRule
 from .algorithms import intersection
@@ -23,7 +23,7 @@ def ridge_response(gray):
     return cv2.boxFilter(dark,-1,(9,1),normalize=True),dark
 
 
-def table_local_verticals(gray,initial):
+def table_local_verticals(gray,initial, *, segments=None):
     """Refit observed vertical fragments only over the internal table span.
 
     This removes barcode continuation from a column fit and avoids rejecting a
@@ -34,7 +34,9 @@ def table_local_verticals(gray,initial):
     bottom=min(initial[2].domain[1],initial[3].domain[1])
     if bottom-top<40:return []
     mid=(top+bottom)/2;parts=[]
-    for _,s,length in _candidate_lines(gray,'v'):
+    if segments is None:
+        segments=_candidate_lines(gray,'v')
+    for _,s,length in segments:
         x0,y0,x1,y1=map(float,s)
         if y1<y0:x0,y0,x1,y1=x1,y1,x0,y0
         lo=max(y0,top);hi=min(y1,bottom)
@@ -109,17 +111,18 @@ def trace_seed(response,seed,xs,dark=None):
     anchor=int(np.argmin(abs(xs-(x0+x1)/2)))
     rewards[anchor,abs(offsets)>3]=-1e4
     score=rewards[0].copy();parents=np.zeros((N,K),np.int16)
+    # Reuse one padded buffer and its five-neighbor views for every column.
+    # The order matches shifts -2..2, including the original tie handling.
+    padded=np.full(K+4,-1e6)
+    neighbors=np.lib.stride_tricks.sliding_window_view(padded,5)[:,::-1]
+    penalties=.13*np.abs(np.arange(-2,3))
+    positions=np.arange(K)
     for i in range(1,N):
-        candidates=[]
-        for shift in range(-2,3):
-            shifted=np.full(K,-1e6)
-            if shift<0:shifted[:shift]=score[-shift:]
-            elif shift>0:shifted[shift:]=score[:-shift]
-            else:shifted=score.copy()
-            candidates.append(shifted-.13*abs(shift))
-        candidates=np.array(candidates);choice=np.argmax(candidates,axis=0)
-        parents[i]=np.arange(K)-(choice-2)
-        score=np.max(candidates,axis=0)+rewards[i]
+        padded[2:-2]=score
+        candidates=neighbors-penalties
+        choice=np.argmax(candidates,axis=1)
+        parents[i]=positions-(choice-2)
+        score=candidates[positions,choice]+rewards[i]
     index=int(np.argmax(score));indices=np.empty(N,int);indices[-1]=index
     for i in range(N-1,0,-1):indices[i-1]=parents[i,indices[i]]
     ys=base+offsets[indices]
@@ -148,13 +151,15 @@ def trace_seed(response,seed,xs,dark=None):
     return ys,vals
 
 
-def detect_physical_graph(image):
+def detect_physical_graph(image, *, ridge=None):
     H,W=image.shape[:2];gray=cv2.cvtColor(image,cv2.COLOR_BGR2GRAY)
-    response,dark=ridge_response(gray)
-    segments=_candidate_lines(gray,'h')
+    response,dark=ridge if ridge is not None else ridge_response(gray)
+    binary=_line_binary(gray)
+    segments=_candidate_lines(gray,'h',binary=binary)
     groups=connected_fragments(segments,W)
     fitted=[r for g in groups if (r:=_fit_group(g,'h',(H,W))) is not None]
-    vertical_candidates=_group_and_fit(gray,'v')
+    vertical_segments=_candidate_lines(gray,'v',binary=binary)
+    vertical_candidates=_group_and_fit(gray,'v',segments=vertical_segments)
     vv=graph_verticals(vertical_candidates,fitted,W,H)
     fallback=False
     if vv is None:
@@ -162,7 +167,7 @@ def detect_physical_graph(image):
     report=dict(status='REJECTED',version='local_physical_graph_v2',edges=[],rejected=[],nodes=[],
                 vertical_fallback=fallback,semantics='VAT/total unknown without text or human labels')
     if vv is None:report['reason']='five_vertical_proposals_missing';return None,report
-    local=table_local_verticals(gray,vv)
+    local=table_local_verticals(gray,vv,segments=vertical_segments)
     refined=graph_verticals(local,fitted,W,H) if len(local)>=5 else None
     if refined is not None:vv=refined;report['vertical_table_local_refit']=True
     vv=junction_outer_boundaries(vv,local+vertical_candidates,fitted,response)

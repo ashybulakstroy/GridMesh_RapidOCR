@@ -68,13 +68,30 @@ def connected_fragments(parts, width, tolerance=3.0):
         last = abs(ay+ma*(end-ax)-cy-mb*(end-cx))
         return max(first,last) <= tolerance
     groups=[]
+    bounds=[]
     for p in sorted(parts,key=lambda p:-p[2]):
-        possible=[g for g in groups if any(compatible(p,q) for q in g)
+        _, (x0,y0,x1,y1), _ = p
+        lo,hi=min(x0,x1),max(x0,x1)
+        low,high=min(y0,y1),max(y0,y1)
+        slope=abs((y1-y0)/max(abs(x1-x0),1))
+        # Exclude groups that cannot possibly pass the original compatibility
+        # test. A line can move by at most |slope| times the largest allowed gap.
+        possible=[g for g,(gx0,gx1,gy0,gy1,gslope) in zip(groups,bounds)
+                  if max(lo-gx1,gx0-hi,0) <= width*.18
+                  and max(low-gy1,gy0-high,0) <= tolerance + max(slope,gslope)*width*.18
+                  and any(compatible(p,q) for q in g)
                   and all(compatible(p,q) for q in g
                           if min(max(p[1][0],p[1][2]),max(q[1][0],q[1][2])) >=
                              max(min(p[1][0],p[1][2]),min(q[1][0],q[1][2])))]
-        if possible:max(possible,key=lambda g:sum(q[2] for q in g)).append(p)
-        else:groups.append([p])
+        if possible:
+            selected=max(possible,key=lambda g:sum(q[2] for q in g))
+            index=next(i for i,group in enumerate(groups) if group is selected)
+            gx0,gx1,gy0,gy1,gslope=bounds[index]
+            bounds[index]=(min(gx0,lo),max(gx1,hi),min(gy0,low),max(gy1,high),max(gslope,slope))
+            selected.append(p)
+        else:
+            groups.append([p])
+            bounds.append((lo,hi,low,high,slope))
     return groups
 
 

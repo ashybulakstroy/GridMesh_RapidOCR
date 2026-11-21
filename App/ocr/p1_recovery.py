@@ -7,6 +7,7 @@ Otherwise it remains a visible candidate, not an automatic correction.
 from decimal import Decimal
 import cv2
 from .engine import read_cell
+from .p1_batch import read_batches
 from .p1_numbers import parse_number, arithmetic_equal
 
 
@@ -96,7 +97,7 @@ def recover_invalid_and_rows(rows, crop_map, *, max_retries=8):
                 continue
             options.append((priority, confidence, row['row_id'], field, row, reason))
     options.sort(key=lambda item:(item[0], item[1], item[2]))
-    attempts, changed, candidates = 0, [], []
+    attempts, changed, candidates, details = 0, [], [], []
     for _,_,_,field,row,reason in options:
         if attempts >= max_retries:
             break
@@ -105,12 +106,13 @@ def recover_invalid_and_rows(rows, crop_map, *, max_retries=8):
             continue
         attempts += 1
         accepted, info = _consider(row, field, crop_map[(row['row_id'],field)],reason)
+        details.append({'row_id':row['row_id'], 'column_id':field, **info})
         if accepted:
             changed.append((row['row_id'], field, 'printed_row_match'))
         elif info['different'] and info['alternative_confidence'] >= .70:
             candidates.append({'row_id':row['row_id'], 'field':field,
                                'text':info['alternative_text'], 'reason':reason})
-    return {'attempted':attempts, 'changed':changed, 'candidates':candidates}
+    return {'attempted':attempts, 'changed':changed, 'candidates':candidates, 'details':details}
 
 
 def recover_total_mismatch(rows, crop_map, expected_total, *, max_retries=8):
@@ -136,13 +138,14 @@ def recover_total_mismatch(rows, crop_map, expected_total, *, max_retries=8):
             score = float(cell.get('confidence') or 0)
             options.append((score,row['row_id'],field,row))
     options.sort(key=lambda item:(item[0],item[1]))
-    attempts, changed, candidates = 0, [], []
+    attempts, changed, candidates, details = 0, [], [], []
     for _,_,field,row in options[:max_retries]:
         attempts += 1
         accepted, info = _consider(row,field,crop_map[(row['row_id'],field)],'footer_mismatch')
+        details.append({'row_id':row['row_id'], 'column_id':field, **info})
         if accepted:
             changed.append((row['row_id'],field,'printed_row_match'))
         elif info['different'] and info['alternative_confidence'] >= .70:
             candidates.append({'row_id':row['row_id'],'field':field,
                                'text':info['alternative_text'], 'reason':'footer_mismatch'})
-    return {'attempted':attempts,'changed':changed,'candidates':candidates}
+    return {'attempted':attempts,'changed':changed,'candidates':candidates,'details':details}

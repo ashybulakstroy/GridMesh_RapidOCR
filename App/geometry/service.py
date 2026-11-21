@@ -2,6 +2,7 @@
 import cv2
 import numpy as np
 from .lab_adapter_gridrefine_v3 import detect_for_lab
+from .fold import recover_fold, recover_left_edges
 from .geometry_lab.algorithms import mesh, Result, intersection
 from .geometry_lab.metrics import safety
 from .geometry_lab.physical_grid_graph_v3 import detect_physical_graph, evidence, ridge_response
@@ -111,6 +112,10 @@ def build_grid(image, *, rectify=False, phase=None):
         raise ValueError('Не удалось уверенно найти печатную сетку таблицы. Загрузите другое фото.')
     if not 5 <= len(data['vertical']) <= 9 or len(data['horizontal']) < 3:
         raise ValueError('Не удалось определить границы столбцов товарной таблицы. Требуется проверка фото.')
+    fold_recovered = 0
+    if method == 'AutoGrid GridRefine V3':
+        data, fold_recovered = recover_fold(image, data)
+    data, left_recovered = recover_left_edges(image, data)
     H, W = image.shape[:2]
     vs, hs = data['vertical'], data['horizontal']
     if phase:
@@ -137,6 +142,8 @@ def build_grid(image, *, rectify=False, phase=None):
     check = safety(result.info['cell_mesh'] if not rectify else result, image.shape)
     review = bool(report.get('autogrid', {}).get('geometry_review_required'))
     warnings = []
+    if left_recovered:
+        warnings.append(f'Уточнены левые участки линий по изображению: {left_recovered}; проверьте сетку.')
     if recovered_horizontal:
         warnings.append(f'Восстановлено границ строк по видимым линиям: {recovered_horizontal}; проверьте сетку и данные.')
     if invalid_spacing:
@@ -164,6 +171,8 @@ def build_grid(image, *, rectify=False, phase=None):
         for y in result.ys:
             cv2.line(overlay, (round(result.xs[0]), round(y)), (round(result.xs[-1]), round(y)), (255, 100, 0), 2)
     return result, overlay, {'method': method, 'autogrid_vertical_count': auto_vertical_count,
+                             'physical_detection_selection': report.get('selection'),
+                             'fold_recovered_horizontal': fold_recovered, 'left_recovered_horizontal': left_recovered,
                              'ridge_refined_horizontal': sum(edge.get('refinement') == 'nearby_source_ridge_3px' for edge in report.get('edges', [])),
                              'rectification': result.method, 'safety': check, 'warnings': warnings}
 
