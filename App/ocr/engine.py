@@ -1,5 +1,7 @@
 """RapidOCR 3.x adapter. Models are initialized once and shared by all cells."""
 import threading
+from time import perf_counter
+from .experiment_rec_trace import record_rec
 import numpy as np
 import cv2
 import re
@@ -56,13 +58,44 @@ def footer_engine():
     return _footer_engine
 
 
+def _run_cyrillic_rec(image):
+    start=perf_counter()
+    try:
+        result=engine()(image,use_det=False,use_cls=False)
+        record_rec(model='v5_cyrillic_mobile',ms=(perf_counter()-start)*1000)
+        return result
+    except Exception as exc:
+        record_rec(model='v5_cyrillic_mobile',ms=(perf_counter()-start)*1000,
+                   success=False,note=str(exc))
+        raise
+
+def _run_english_rec(image):
+    start=perf_counter()
+    try:
+        result=english_engine()(image,use_det=False,use_cls=False)
+        record_rec(model='v5_english_mobile',ms=(perf_counter()-start)*1000)
+        return result
+    except Exception as exc:
+        record_rec(model='v5_english_mobile',ms=(perf_counter()-start)*1000,
+                   success=False,note=str(exc))
+        raise
+
+
 def read_full(image, *, footer_mode=False, cell_mode=False):
     if image is None or not image.size or min(image.shape[:2]) < 4: return []
     scale = max(1., 160/min(image.shape[:2])) if cell_mode else 1.
     if scale > 1:
         image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     with _lock:
-        result = (footer_engine() if footer_mode or cell_mode else engine())(image, use_det=True, use_cls=False)
+        clock=perf_counter()
+        try:
+            result = (footer_engine() if footer_mode or cell_mode else engine())(image, use_det=True, use_cls=False)
+            record_rec(mode='DET+REC',model='v5_cyrillic_mobile',ms=(perf_counter()-clock)*1000,
+                       note='Detector may dispatch multiple internal REC calls; exact count unavailable')
+        except Exception as exc:
+            record_rec(mode='DET+REC',model='v5_cyrillic_mobile',ms=(perf_counter()-clock)*1000,
+                       success=False,note=str(exc))
+            raise
     if result.boxes is None or result.txts is None: return []
     lines = []
     for box, text, score in zip(result.boxes, result.txts, result.scores):
@@ -75,7 +108,7 @@ def read_full(image, *, footer_mode=False, cell_mode=False):
             crop = image[max(0,y0):min(image.shape[0],y1+1), max(0,x0):min(image.shape[1],x1+1)]
             if crop.size:
                 with _lock:
-                    alternate = english_engine()(crop, use_det=False, use_cls=False)
+                    alternate = _run_english_rec(crop)
                 if alternate.txts and alternate.scores[0] > score + .03:
                     candidate = str(alternate.txts[0])
                     if re.search(r'[A-Za-z]', candidate):
@@ -106,7 +139,7 @@ def read_line(image):
     """Recognize one observed line without running the text detector."""
     if image is None or not image.size: return None
     with _lock:
-        result = engine()(image, use_det=False, use_cls=False)
+        result = _run_cyrillic_rec(image)
     if not result.txts: return None
     return {'text':str(result.txts[0]), 'confidence':float(result.scores[0])}
 
@@ -149,13 +182,13 @@ def _read_observed_name_lines(image, row_id, column_id, offset):
         top, bottom = max(0,start-2), min(image.shape[0],end+2)
         crop = image[top:bottom,:]
         with _lock:
-            recognized = engine()(crop, use_det=False, use_cls=False)
+            recognized = _run_cyrillic_rec(crop)
         if not recognized.txts or recognized.scores[0] < .60 or not re.search(r'\w',recognized.txts[0]):
             return None
         text, score = str(recognized.txts[0]), float(recognized.scores[0])
         if len(re.findall(r'[A-Za-z]',text)) >= 2 and not re.search(r'[А-Яа-яЁё]',text):
             with _lock:
-                alternative = english_engine()(crop, use_det=False, use_cls=False)
+                alternative = _run_english_rec(crop)
             if alternative.txts and alternative.scores[0] > score+.03 and re.search(r'[A-Za-z]',alternative.txts[0]):
                 text, score = str(alternative.txts[0]), float(alternative.scores[0])
         blocks.append(dict(text=text, confidence=score,
@@ -176,7 +209,7 @@ def read_cell(image, row_id, column_id, offset, *, force_single=False):
             return segmented
     if force_single or column_id != 'name' or image.shape[0] < 45 or not _has_separate_numeric_lines(image):
         with _lock:
-            direct = engine()(image, use_det=False, use_cls=False)
+            direct = _run_cyrillic_rec(image)
         if direct.txts:
             text, score = str(direct.txts[0]), float(direct.scores[0])
             if column_id in {'quantity', 'price'} and _has_separate_numeric_lines(image):

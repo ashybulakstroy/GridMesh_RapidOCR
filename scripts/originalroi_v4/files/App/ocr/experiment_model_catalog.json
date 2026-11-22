@@ -1,0 +1,43 @@
+[
+  {
+    "id": "v5_cyrillic_mobile",
+    "name": "PP-OCRv5 Mobile Cyrillic",
+    "ocr_version": "PPOCRV5",
+    "model_type": "MOBILE",
+    "lang": "cyrillic",
+    "cyrillic": true,
+    "enabled": true
+  },
+  {
+    "id": "v6_tiny_official",
+    "name": "PP-OCRv6 Tiny official",
+    "ocr_version": "PPOCRV6",
+    "model_type": "TINY",
+    "lang": "en",
+    "cyrillic": false,
+    "enabled": true
+  },
+  {
+    "id": "v6_small_official",
+    "name": "PP-OCRv6 Small official",
+    "ocr_version": "PPOCRV6",
+    "model_type": "SMALL",
+    "lang": "en",
+    "cyrillic": false,
+    "enabled": true
+  },
+  {
+    "id": "v6_tiny_cyrillic_optional",
+    "name": "PP-OCRv6 Tiny Cyrillic (Metrika Labs ONNX)",
+    "enabled": true,
+    "cyrillic": true,
+    "lang": "cyrillic",
+    "model_path": "models/ppocrv6_tiny_cyrillic/inference.onnx",
+    "model_sha256": "d804d23767efd82e188f591d77589d213d102a759785436c89ae6afb88721d05",
+    "rec_img_shape": [
+      3,
+      48,
+      640
+    ]
+  }
+]

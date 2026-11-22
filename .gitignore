@@ -14,3 +14,4 @@ benchmark/data/output/*
 !benchmark/data/output/.gitkeep
 benchmark/reports/*
 !benchmark/reports/.gitkeep
+data/experiment_reports/

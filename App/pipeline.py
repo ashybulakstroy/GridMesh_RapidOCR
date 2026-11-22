@@ -17,6 +17,13 @@ from .ocr.p1_batch import BatchCell, read_batches
 from .ocr.p1_numbers import parse_number
 from .ocr.p1_recovery import recover_invalid_and_rows, recover_total_mismatch
 from .ocr.p1_double_retry import retry_suspect_cells
+from .ocr.experiment_matrix import CandidateBook, solve_matrix
+from .ocr.experiment_original import OriginalNumericCache
+from .ocr.experiment_footer import scan_footer
+from .ocr.experiment_vat import scan_printed_vat
+from .ocr.experiment_models import ExperimentModelPool
+from .ocr.experiment_rec_trace import RecTracker, activate, deactivate, rec_scope
+from .ocr.experiment_auto import auto_apply_consensus
 from .config import positive_int, setting, ROOT
 from .ocr.ocr_performance import OCRPerformance
 
@@ -156,6 +163,15 @@ def recover_tax_below_grid(image, rect, columns, row_id):
 
 
 def process(data, publish=None, job_id=None, *, rectify=False):
+    tracker=RecTracker()
+    token=activate(tracker)
+    try:
+        return _process_job(data,publish,job_id,rectify=rectify,rec_tracker=tracker)
+    finally:
+        deactivate(token)
+
+
+def _process_job(data, publish=None, job_id=None, *, rectify=False, rec_tracker):
     if job_id is None:
         job_id = uuid.uuid4().hex
     if not re.fullmatch(r'[a-f0-9]{32}', job_id):
@@ -182,6 +198,7 @@ def process(data, publish=None, job_id=None, *, rectify=False):
         (job_dir/'processing_log.json').write_text(json.dumps(profile.processing_log, ensure_ascii=False, indent=2), encoding='utf-8')
         (job_dir/'error.json').write_text(json.dumps({'error':str(exc)}, ensure_ascii=False, indent=2), encoding='utf-8')
         raise
+    result['rec_trace']=rec_tracker.export()
     performance = profile.finish()
     result['performance'] = performance
     result['job_id'] = job_id
@@ -192,6 +209,17 @@ def process(data, publish=None, job_id=None, *, rectify=False):
     performance['budget_events'] = [event for event in result['processing_log'] if event['type'] == 'budget']
     (job_dir/'performance_profile.json').write_text(json.dumps(performance, ensure_ascii=False, indent=2), encoding='utf-8')
     (job_dir/'processing_log.json').write_text(json.dumps(result['processing_log'], ensure_ascii=False, indent=2), encoding='utf-8')
+    # E1 metadata is stored beside receipt.json; raw ROIs remain in RAM only.
+    result['numeric_experiment_file'] = f"{result['job_directory']}/numeric_experiment.json"
+    experiment_payload = {key:result.get(key) for key in
+                          ('numeric_candidate_book','numeric_matrix','original_roi_experiment',
+                           'footer_variant_attempts','vat_evidence','printed_vat',
+                           'numeric_auto_corrections','rec_trace')}
+    experiment_payload['model_ensemble'] = (result.get('geometry',{})
+                                            .get('numeric_experiment',{})
+                                            .get('model_ensemble'))
+    (job_dir/'numeric_experiment.json').write_text(
+        json.dumps(experiment_payload, ensure_ascii=False, indent=2), encoding='utf-8')
     receipt = {key:value for key,value in result.items() if key not in ('original', 'rectified')}
     (job_dir/'receipt.json').write_text(json.dumps(receipt, ensure_ascii=False, indent=2), encoding='utf-8')
     return result
@@ -199,6 +227,7 @@ def process(data, publish=None, job_id=None, *, rectify=False):
 
 def _process(data, profile, job_dir, rectify):
     started = time.perf_counter()
+    e4_enabled = setting('OCR_E4_ENABLE','0') == '1'
     processing_log = profile.processing_log
     profile.phase('Подготовка и ориентация изображения')
     with Image.open(BytesIO(data)) as photo:
@@ -290,6 +319,9 @@ def _process(data, profile, job_dir, rectify):
     # Physical row numbers are DERIVED from the ordered grid, not claimed as OCR.
     profile.phase('OCR P1: подготовка пакетов ячеек')
     cell_requests, crop_map = [], {}
+    # E1: cache original source pixels; the usual remapped crop remains primary.
+    original_numeric_cache = OriginalNumericCache(
+        image, rect, max_bytes=positive_int('OCR_ORIGINAL_CACHE_MB',32)*1024*1024)
     body_row_count = len(ys)-2
     field_order = ('name','quantity','price') + (('printed_total',) if 'printed_total' in columns else ())
     for idx in range(1, body_row_count+1):
@@ -298,6 +330,8 @@ def _process(data, profile, job_dir, rectify):
             cell_requests.append(BatchCell(crop, idx, field, offset, source_bbox))
             if field in ('quantity','price','printed_total'):
                 crop_map[(idx,field)] = crop
+                if e4_enabled:
+                    original_numeric_cache.store(idx, field, columns[field])
     profile.phase('OCR P1: пакетный RapidOCR')
     readouts, batch_stats = read_batches(cell_requests, batch_size=positive_int('OCR_REC_BATCH_NUM',8))
     geometry['ocr_batch'] = batch_stats
@@ -338,9 +372,20 @@ def _process(data, profile, job_dir, rectify):
                      'printed_line_total':str(printed) if printed is not None else None,
                      'printed_line_match':(abs(q*p-printed) <= Decimal('0.01')) if
                          q is not None and p is not None and printed is not None else None})
+    # Snapshot pre-retry observations, including OCR scores for provenance.
+    primary_numeric_observations = {
+        CandidateBook.key(row['row_id'], field): {
+            'text': row['cells'][field]['text'],
+            'confidence': row['cells'][field].get('confidence')}
+        for row in rows for field in ('quantity','price','printed_total')
+        if field in row['cells']
+    }
     profile.phase('OCR P1: выборочное восстановление чисел')
     retry_budget = positive_int('OCR_P1_MAX_RETRIES', 4)
-    initial_recovery = recover_invalid_and_rows(rows,crop_map,max_retries=retry_budget)
+    initial_recovery = ({'attempted':0,'changed':[],'candidates':[],
+                         'details':[],'delegated':'e4_independent_original_roi'}
+                        if e4_enabled and setting('OCR_E4_ROUTE_RETRIES','1') == '1' else
+                        recover_invalid_and_rows(rows,crop_map,max_retries=retry_budget))
     geometry['ocr_recovery'] = {'initial':initial_recovery}
     log_retry_details(processing_log, initial_recovery, 'Первичная проверка чисел')
     recovered_tax_bottom = None
@@ -355,6 +400,10 @@ def _process(data, profile, job_dir, rectify):
                 cell_requests.append(BatchCell(crop, row['row_id'], field,
                                                tuple(cell['bbox'][:2]), cell['source_bbox']))
                 crop_map[(row['row_id'],field)] = crop
+                # VAT outside the mesh is already an original-pixel extraction.
+                if e4_enabled:
+                    original_numeric_cache.crops[(row['row_id'],field)] = crop.copy()
+                    original_numeric_cache.bytes += crop.nbytes
             processing_log.append({'type':'operation', 'stage':'Проверка НДС',
                                    'message':'Строка НДС найдена под границей сетки.'})
             geometry['footer_marker'] = footer_marker
@@ -380,6 +429,13 @@ def _process(data, profile, job_dir, rectify):
     if recovered_tax_bottom is not None:
         y_bottom = max(y_bottom, recovered_tax_bottom)
     footer_top = max(0,y_bottom-20)
+    # All footer recognitions are attributable to one printed total.
+    def footer_read_line(source_crop):
+        with rec_scope(['receipt_total'],'printed_footer_primary'):
+            return read_line(source_crop)
+    def footer_read_full(source_crop, **kwargs):
+        with rec_scope(['receipt_total'],'printed_footer_detector'):
+            return read_full(source_crop, **kwargs)
     footer = image[footer_top:min(image.shape[0], y_bottom+max(55,int(image.shape[1]*.09))), :]
     profile.phase('Распознавание напечатанного итога')
     footer_left = int(image.shape[1]*.45)
@@ -389,9 +445,9 @@ def _process(data, profile, job_dir, rectify):
         if not sample.size:
             lines = []
         elif fast:
-            lines = read_full(sample, footer_mode=True)
+            lines = footer_read_full(sample, footer_mode=True)
         else:
-            lines = read_full(sample)
+            lines = footer_read_full(sample)
         for line in lines:
             line['bbox'] = [[x/scale+footer_left, y/scale+footer_top] for x,y in line['bbox']]
         # Numeric blocks at the right of the same baseline form the printed
@@ -413,7 +469,7 @@ def _process(data, profile, job_dir, rectify):
     current_sum = sum((Decimal(r['line_total']) for r in rows if r['line_total'] is not None), Decimal(0))
     fast_x = int(image.shape[1]*.50)
     fast_top, fast_bottom = max(0,y_bottom+2), min(image.shape[0], y_bottom+int(image.shape[1]*.05))
-    direct = read_line(image[fast_top:fast_bottom,fast_x:])
+    direct = footer_read_line(image[fast_top:fast_bottom,fast_x:])
     footer_attempts = []
     total, footer_lines = None, []
     if direct:
@@ -434,7 +490,7 @@ def _process(data, profile, job_dir, rectify):
             left = int(image.shape[1]*frac)
             top = max(0, y_bottom+offset)
             bottom = min(image.shape[0], top+int(image.shape[1]*height))
-            line = read_line(image[top:bottom, left:])
+            line = footer_read_line(image[top:bottom, left:])
             if not line:
                 continue
             line['bbox'] = [[left,top], [image.shape[1],top], [image.shape[1],bottom], [left,bottom]]
@@ -491,10 +547,10 @@ def _process(data, profile, job_dir, rectify):
                           batch_stats.get('numeric_roi_currency_skipped_cells'))
     low_confidence = any(float(row['cells'][field].get('confidence') or 0) < .80
                          for row in rows for field in ('quantity', 'price'))
-    retry_required = (incomplete_before or receipt_mismatch or row_mismatch or vat_mismatch or
+    retry_required = (incomplete_before or receipt_mismatch or row_mismatch or
                       missing_total or (budget_limited and low_confidence))
     expanded_recovery = {'attempted':0, 'details':[], 'changed':[], 'candidates':[], 'batch':None}
-    if retry_required:
+    if retry_required and (not e4_enabled or setting('OCR_E4_ROUTE_RETRIES','1') != '1'):
         processing_log.append({'type':'check', 'stage':'Контроль сумм',
                                'printed_total':str(expected_total) if expected_total is not None else None,
                                'computed_total':str(before_sum), 'incomplete':incomplete_before,
@@ -525,10 +581,125 @@ def _process(data, profile, job_dir, rectify):
                                    'message':f'Повтор не выполнен: {type(exc).__name__}: {exc}'})
         profile.phase('OCR P1: дополнительная проверка итога')
     geometry['ocr_recovery']['double_budget'] = expanded_recovery
-    footer_recovery = recover_total_mismatch(rows,crop_map,number(total),
-        max_retries=max(0,retry_budget-initial_recovery['attempted']))
+    footer_recovery = ({'attempted':0,'changed':[],'candidates':[],
+                        'details':[],'delegated':'e4_independent_original_roi'}
+                       if e4_enabled and setting('OCR_E4_ROUTE_RETRIES','1') == '1' else
+                       recover_total_mismatch(rows,crop_map,number(total),
+                           max_retries=max(0,retry_budget-initial_recovery['attempted'])))
     geometry['ocr_recovery']['footer'] = footer_recovery
     log_retry_details(processing_log, footer_recovery, 'Дополнительная проверка итога')
+    # E1: finish the normal OCR pipeline first.  Do not mutate its numbers;
+    # independent source-pixel observations form alternatives for a bounded
+    # candidate matrix, not automatic replacements.
+    if e4_enabled:profile.phase('OCR E1: оригинальные пиксели и матрица чисел')
+    numeric_book_export = {'cells': {}, 'footer': []}
+    numeric_matrix = {'status':'not_run' if e4_enabled else 'disabled', 'review_required':e4_enabled}
+    original_roi_experiment = {}
+    numeric_auto_corrections = {'status':'not_run','changes':[]}
+    footer_variant_attempts = []
+    vat_evidence = {'source': None, 'source_status': 'not_run', 'observations': []}
+    printed_vat_observed = None
+    if e4_enabled:
+        try:
+            audit_sum = sum((Decimal(r['line_total']) for r in rows if r['line_total'] is not None), Decimal(0))
+            book = CandidateBook.from_receipt(rows, primary_numeric_observations,
+                                             geometry['ocr_recovery'], total, footer_attempts)
+            model_pool = ExperimentModelPool()
+            footer_variant_attempts = scan_footer(
+                image, y_bottom, total, audit_sum,
+                read_line=read_line, read_full=read_full,
+                always_check=setting('OCR_FOOTER_VERIFY_ALWAYS', '1') == '1',
+                max_probes=positive_int('OCR_FOOTER_MAX_PROBES',8),
+                model_pool=model_pool)
+            for alternative in footer_variant_attempts:
+                if alternative.get('total') is not None:
+                    book.add_footer(alternative['total'], alternative.get('confidence'),
+                                    alternative['strategy'],
+                                    model=alternative.get('model_id') or alternative.get('model','PP-OCRv5 Cyrillic Mobile / RapidOCR 3.x'))
+            # E3: photograph-based OCR of VAT, with its own independent observations.
+            # Never infer 'printed VAT' solely by applying the tax percentage.
+            vat_evidence = scan_printed_vat(
+                rows, original_numeric_cache, book, vat_rate, read_line=read_line,
+                model_pool=model_pool,
+                always_check=setting('OCR_VAT_VERIFY_ALWAYS','1') == '1',
+                max_probes=positive_int('OCR_VAT_MAX_PROBES',6))
+            if book.vat:
+                printed_vat_observed=book.vat[0]['text']
+            original_roi_experiment = original_numeric_cache.run_suspects(
+                rows, book, printed_total=total,
+                max_calls=positive_int('OCR_ORIGINAL_MAX_RECOGNITIONS',8),
+                read_line=read_line, model_pool=model_pool)
+            numeric_matrix = solve_matrix(rows, book, vat_rate,
+                max_nodes=positive_int('OCR_MATRIX_MAX_NODES',100000))
+            if ((numeric_matrix['status'] != 'unique_math_match' or
+                 numeric_matrix.get('review_required') or numeric_matrix.get('recommended_changes')) and
+                    setting('OCR_E4_SECOND_PASS','1') == '1'):
+                target_keys={(v['row_id'],v['field']) for v in numeric_matrix.get('recommended_changes',[])}
+                second_pass = original_numeric_cache.escalate_suspects(
+                    book, original_roi_experiment, model_pool,
+                    max_calls=positive_int('OCR_E4_SECOND_PASS_MAX',3),
+                    only_keys=target_keys if numeric_matrix['status']=='unique_math_match' and target_keys else None)
+                original_roi_experiment['second_pass'] = second_pass
+                if second_pass['recognitions']:
+                    numeric_matrix = solve_matrix(rows, book, vat_rate,
+                        max_nodes=positive_int('OCR_MATRIX_MAX_NODES',100000))
+            numeric_auto_corrections = auto_apply_consensus(
+                rows,book,numeric_matrix,total,
+                enabled=setting('OCR_E4_AUTO_APPLY','1') == '1')
+            if numeric_auto_corrections['status']=='applied':
+                total=numeric_auto_corrections['printed_total']
+                printed_vat_observed=(numeric_matrix['solutions'][0].get('vat_printed') or printed_vat_observed)
+                numeric_matrix = solve_matrix(rows, book, vat_rate,
+                    max_nodes=positive_int('OCR_MATRIX_MAX_NODES',100000))
+                processing_log.append({'type':'operation','stage':'E4 автоматическая сверка',
+                    'message':'Выбрана единственная арифметически согласованная комбинация: '
+                              + str(len(numeric_auto_corrections['changes'])) + ' исправлений.'})
+            numeric_matrix['auto_applied'] = numeric_auto_corrections
+            numeric_matrix['user_action_required'] = numeric_matrix['status']=='ambiguous'
+            numeric_matrix['automatic_resolution'] = (
+                'consistent' if numeric_matrix['status']=='unique_math_match' and not numeric_matrix['review_required']
+                else 'selected_by_confidence_review_required' if numeric_matrix['status']=='ambiguous'
+                else 'unresolved_preserved_without_forced_edit')
+            numeric_book_export = book.export()
+            geometry['numeric_experiment'] = {
+                'status':numeric_matrix['status'],
+                'original_cache_cells':original_roi_experiment['cache_cells'],
+                'original_cache_bytes':original_roi_experiment['cache_bytes'],
+                'source_rec_calls':original_roi_experiment['rec_calls'],
+                'footer_probe_calls':len(footer_variant_attempts),
+                'vat_probe_calls':vat_evidence['probes'],
+                'vat_source_status':vat_evidence['source_status'],
+                'vat_variants':numeric_matrix['vat_variants'],
+                'critical_ambiguity':numeric_matrix['critical_ambiguity'],
+                'matrix_nodes':numeric_matrix['nodes_visited'],
+                'matrix_bounded':numeric_matrix['search_truncated'],
+                'model_ensemble':model_pool.stats()}
+            if numeric_matrix['footer_ambiguous']:
+                geometry['warnings'].append('OCR печатного итога дал разные варианты; альтернативы сохранены для анализа.')
+            if numeric_matrix['vat_ambiguous']:
+                geometry['warnings'].append('OCR напечатанного НДС дал разные значения; альтернативы сохранены для анализа.')
+            if numeric_matrix.get('vat_rate_diagnostic',{}).get('status')=='operator_calculation_anomaly':
+                processing_log.append({'type':'financial_warning','stage':'Контроль НДС',
+                    'message':'Напечатанный НДС расходится с расчётом по ставке, но это не ошибка OCR само по себе.'})
+            if numeric_matrix['critical_ambiguity']:
+                geometry['warnings'].append('Найдены разные математически согласованные комбинации цифр. Выбрана комбинация с наибольшей уверенностью OCR. Пожалуйста, проверьте цифры.')
+            if any(row.get('kind')=='tax' for row in rows) and not numeric_matrix['printed_vat_observed']:
+                geometry['warnings'].append('Нет независимого OCR-подтверждения суммы НДС; проверены только значения ячеек и общий итог.')
+            if numeric_matrix['recommended_changes']:
+                geometry['warnings'].append('Матрица сохранила альтернативные цифры; исходные OCR-значения оставлены без автоматической подмены.')
+            processing_log.append({'type':'operation', 'stage':'Эксперимент E1',
+                'message':f"E1: исходных ROI {original_roi_experiment['cache_cells']}, "
+                          f"повторов {original_roi_experiment['rec_calls']}, "
+                          f"вариантов итога {len(numeric_matrix['footer_variants'])}, "
+                          f"вариантов НДС {len(numeric_matrix['vat_variants'])}, "
+                          f"матрица {numeric_matrix['status']}."})
+        except Exception as exc:
+            numeric_matrix={'status':'experiment_error','review_required':True,
+                            'error':f'{type(exc).__name__}: {exc}'}
+            geometry['numeric_experiment']={'status':'experiment_error'}
+            geometry['warnings'].append('Дополнительная проверка альтернатив OCR завершилась ошибкой; основной результат сохранён.')
+            processing_log.append({'type':'error','stage':'Эксперимент E1',
+                                   'message':f'Эксперимент E1: {type(exc).__name__}: {exc}'})
     if initial_recovery['candidates'] or expanded_recovery['candidates'] or footer_recovery['candidates']:
         geometry['warnings'].append('Есть альтернативные варианты OCR чисел, требующие проверки.')
     invalid_printed = [r['row_id'] for r in rows if r.get('printed_line_match') is False]
@@ -544,7 +715,7 @@ def _process(data, profile, job_dir, rectify):
                 numeric_issues.append(issue)
                 label = 'количество' if col == 'quantity' else 'цену'
                 shown = str(value) if str(value).strip() else 'пустое значение'
-                geometry['warnings'].append(f'Строка {row["row_id"]}: проверьте {label} «{shown}» — число не рассчитано.')
+                geometry['warnings'].append(f'Строка {row["row_id"]}: {label} «{shown}» не удалось надёжно распознать; число не рассчитано.')
     ocr_s = time.perf_counter() - ocr_start
     profile.phase('Сборка и проверка электронного чека')
     computed = sum((Decimal(r['line_total']) for r in rows if r['line_total'] is not None), Decimal(0))
@@ -562,9 +733,13 @@ def _process(data, profile, job_dir, rectify):
                                          f"{'совпадает' if match else 'требует проверки'}; "
                                          f"НДС {'совпадает' if vat_ok is True else 'требует проверки'}."})
     if incomplete: geometry['warnings'].append('Есть ячейки с нераспознанным количеством или ценой.')
-    if total is None: geometry['warnings'].append('Печатный итог не найден; проверьте вручную.')
+    if total is None: geometry['warnings'].append('Печатный итог не получен однозначно; доступные OCR-варианты сохранены.')
     elif not match: geometry['warnings'].append('Сумма строк не совпадает с печатным итогом.')
-    if vat_ok is False: geometry['warnings'].append('Сумма НДС не совпадает с расчётом по установленной ставке.')
+    # Financial validation is orthogonal to whether printed digits were read.
+    if not e4_enabled and vat_ok is False:
+        geometry['warnings'].append('Сумма НДС не совпадает с расчётом по установленной ставке.')
+    operator_vat_warning=('Напечатанный НДС расходится с установленной ставкой; возможна ошибка оператора.'
+                           if vat_ok is False else None)
     map_path = job_dir/'rectification_map.npz'
     np.savez_compressed(map_path, map_x=rect.map_x, map_y=rect.map_y)
     geometry['inverse_map'] = str(map_path.relative_to(ROOT)).replace('\\', '/')
@@ -572,6 +747,18 @@ def _process(data, profile, job_dir, rectify):
             'processing_log': processing_log,
             'original': png(image), 'rectified': png(overlay), 'rows': rows,
             'numeric_issues': numeric_issues,
+             'numeric_candidate_book': numeric_book_export,
+             'ocr_user_action_required': False,
+             'numeric_auto_corrections': numeric_auto_corrections,
+             'numeric_matrix': numeric_matrix,
+             'original_roi_experiment': original_roi_experiment,
+             'footer_variant_attempts': footer_variant_attempts,
+             'vat_evidence': vat_evidence,
+             'printed_vat': printed_vat_observed,
+             'vat_rate_diagnostic': numeric_matrix.get('vat_rate_diagnostic'),
+             'financial_warnings': [operator_vat_warning] if operator_vat_warning else [],
+             'ocr_validation_status':('consistent' if match and not numeric_matrix.get('review_required',True)
+                                      else 'review'),
             'total': total, 'computed_total': str(computed), 'math_match': match,
             'vat': {'status': 'not_applicable' if vat_ok is None else 'match' if vat_ok else 'mismatch',
                     'rate_percent': str(vat_rate), 'amount': str(vat_sum) if taxes else None},

@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from .pipeline import process
+from .ocr.experiment_manual import apply_user_receipt
 from .config import setting
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -85,9 +86,23 @@ def save_edited_receipt(job_id: str, receipt: dict):
         directory = (ROOT / job['result']['job_directory']).resolve()
     if not directory.is_relative_to(ROOT) or receipt.get('job_id') != job_id or not isinstance(receipt.get('rows'), list):
         raise HTTPException(400, 'Некорректные данные чека')
-    clean = {k:v for k,v in receipt.items() if k not in ('original','rectified')}
+    # Server independently recomputes Decimal arithmetic and locks valid
+    # browser-confirmed figures; never trust client-provided math flags.
+    try:
+        clean = apply_user_receipt(job['result'], receipt)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     target = directory/'receipt_edited.json'
     tmp = directory/'receipt_edited.json.tmp'
     tmp.write_text(json.dumps(clean, ensure_ascii=False, indent=2), encoding='utf-8')
     tmp.replace(target)
-    return {'saved': True, 'file': str(target.relative_to(ROOT)).replace('\\','/')}
+    # Persist user ground truth and model-vs-user feedback separately.
+    truth=directory/'numeric_user_truth.json'
+    truth_tmp=directory/'numeric_user_truth.json.tmp'
+    truth_tmp.write_text(json.dumps({'manual_truth':clean.get('numeric_user_truth',[]),
+        'model_feedback':clean.get('numeric_model_feedback',[])},
+        ensure_ascii=False, indent=2),encoding='utf-8')
+    truth_tmp.replace(truth)
+    with jobs_lock:
+        jobs[job_id]['result']={**job['result'],**clean}
+    return {'saved': True, 'file': str(target.relative_to(ROOT)).replace('\\','/'), 'receipt': clean}

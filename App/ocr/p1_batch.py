@@ -5,9 +5,11 @@ Do not create ONNX sessions per cell or spawn competing Python threads.
 """
 from dataclasses import dataclass, replace
 from time import perf_counter
+from time import perf_counter as rec_counter
 import numpy as np
 
 from .engine import engine, read_cell, _has_separate_numeric_lines, _lock
+from .experiment_rec_trace import rec_scope, record_rec
 from .numeric_roi import crop_numeric_ink, split_price_currency
 import re
 from ..config import setting
@@ -93,7 +95,8 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1):
     for cell in working:
         key = (cell.row_id, cell.column_id)
         if _has_separate_numeric_lines(cell.image):
-            item = read_cell(cell.image, cell.row_id, cell.column_id, cell.offset)
+            with rec_scope([(cell.row_id,cell.column_id)],'primary_multiline_cell'):
+                item = read_cell(cell.image, cell.row_id, cell.column_id, cell.offset)
             item['source_bbox'] = cell.source_bbox
             item['strategy'] = item.get('strategy','legacy_multiline')
             out[key] = item
@@ -109,8 +112,19 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1):
             try:
                 # RapidOCR 3.10.0: RapidOCR.recognize_txt(List[np.ndarray])
                 # calls TextRecognizer and uses its configured rec_batch_num.
-                with _lock:
-                    response = engine().recognize_txt([c.image for c in chunk])
+                started_rec=rec_counter()
+                try:
+                    with _lock:
+                        response = engine().recognize_txt([c.image for c in chunk])
+                    record_rec(keys=[f'{c.row_id}:{c.column_id}' for c in chunk],
+                               stage='primary_rec_batch',model='v5_cyrillic_mobile',
+                               ms=(rec_counter()-started_rec)*1000)
+                except Exception as error:
+                    record_rec(keys=[f'{c.row_id}:{c.column_id}' for c in chunk],
+                               stage='primary_rec_batch',model='v5_cyrillic_mobile',
+                               ms=(rec_counter()-started_rec)*1000,
+                               success=False,note=str(error))
+                    raise
                 if response.txts is None or len(response.txts) != len(chunk):
                     raise RuntimeError('Batch returned incorrect number of results')
                 for c,txt,score in zip(chunk,response.txts,response.scores):
@@ -119,7 +133,8 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1):
                 stats['batch_fallback'] += len(chunk)
                 stats['errors'].append(f'{group} batch: {type(exc).__name__}: {exc}')
                 for c in chunk:
-                    item = read_cell(c.image, c.row_id, c.column_id, c.offset)
+                    with rec_scope([(c.row_id,c.column_id)],'primary_batch_exception_fallback'):
+                        item = read_cell(c.image, c.row_id, c.column_id, c.offset)
                     item['source_bbox'] = c.source_bbox
                     item['strategy'] = 'legacy_batch_fallback'
                     out[(c.row_id,c.column_id)] = item

@@ -1,0 +1,23 @@
+# Добавить в .env РАБОЧЕГО ПРОЕКТА, не заменять его целиком.
+# Включите после проверки check_models.py: OFFICIAL модели могут скачаться при первом запуске.
+OCR_E2_ENABLE=1
+OCR_E2_NUMERIC_MODELS=v6_small_official,v6_tiny_official
+OCR_E2_FOOTER_MODELS=v6_small_official,v6_tiny_official
+OCR_E2_VAT_MODELS=v6_small_official,v6_tiny_official
+OCR_VAT_VERIFY_ALWAYS=1
+OCR_VAT_MAX_PROBES=6
+OCR_E2_MAX_MODEL_CALLS=16
+OCR_FOOTER_VERIFY_ALWAYS=1
+OCR_FOOTER_MAX_PROBES=8
+OCR_ONNX_THREADS=2
+
+# V4: отдавать подозрительные цифры независимой модели вместо повторов v5.
+OCR_E4_ROUTE_RETRIES=1
+OCR_E4_SECOND_PASS=1
+OCR_E4_SECOND_PASS_MAX=3
+# Число исходных Numeric ROI для независимого распознавания
+OCR_ORIGINAL_MAX_RECOGNITIONS=8
+
+# E4: автоматическое исправление только при двух независимых OCR-моделях
+OCR_E4_AUTO_APPLY=1
+OCR_E4_MIN_MODEL_AGREEMENT=2
