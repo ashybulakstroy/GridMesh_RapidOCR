@@ -11,7 +11,7 @@ import numpy as np
 from .engine import engine, read_cell, _has_separate_numeric_lines, _lock
 from .experiment_rec_trace import rec_scope, record_rec
 from .debug_performance import get_debug, report_issue
-from .numeric_roi import crop_numeric_ink, split_price_currency
+from .numeric_roi import crop_numeric_ink, split_price_currency, exclude_price_currency
 import re
 from ..config import setting
 
@@ -63,6 +63,7 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
     roi_skipped = 0
     skipped_cells = []
     roi_enabled = setting('OCR_NUMERIC_ROI', '1') == '1'
+    currency_crop_enabled = setting('OCR_PRICE_CURRENCY_CROP', '1') == '1'
     if roi_enabled:
         # The last row often carries VAT, where a misread unit price
         # multiplies the error by the entire tax amount.
@@ -82,12 +83,16 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
             else:
                 started = perf_counter()
                 cropped, info = crop_numeric_ink(cell.image)
+                if cell.column_id == 'price' and currency_crop_enabled:
+                    cropped, info = exclude_price_currency(cropped, info)
                 roi_seconds += perf_counter() - started
                 roi_metadata[(cell.row_id,cell.column_id)] = info
                 working[i] = replace(cell, image=cropped)
     crop_seconds = roi_seconds
     stats.update(numeric_roi_ms=round(roi_seconds*1000,3),
                  numeric_roi_enabled=roi_enabled,
+                 numeric_currency_crop_enabled=currency_crop_enabled,
+                 numeric_currency_removed=sum(bool(info.get('currency_removed_before_ocr')) for info in roi_metadata.values()),
                  numeric_roi_crop_ms=round(crop_seconds*1000,3),
                  numeric_roi_budget_ms=round(roi_limit_s*1000),
                  numeric_roi_crop_budget_ms=round(crop_limit_s*1000),
@@ -207,6 +212,8 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
     for cell in working:
         key = (cell.row_id, cell.column_id)
         raw = out[key]['text'].strip()
+        if roi_metadata.get(key,{}).get('currency_removed_before_ocr'):
+            continue  # A real final 7 must never be reclassified after cropping.
         if cell.column_id != 'price' or not re.fullmatch(r'[0-9]+(?:[,.][0-9]+)?7', raw):
             continue
         if not unlimited_roi and roi_seconds >= roi_limit_s:
@@ -227,7 +234,7 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
             result['currency_symbol'] = info['currency']
             result['ocr_text'] = result['text']
             raw = result['text'].strip()
-            if re.fullmatch(r'[0-9]+(?:[,.][0-9]+)?', raw):
+            if not info.get('currency_removed_before_ocr') and re.fullmatch(r'[0-9]+(?:[,.][0-9]+)?', raw):
                 digits = sum(char.isdigit() for char in raw)
                 observed_digits = info['currency']['numeric_glyph_count']
                 if digits == observed_digits+1 and raw.endswith('7'):

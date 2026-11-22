@@ -56,10 +56,11 @@ def test_tall_mesh_cells_read_quantity_and_price_in_one_batch():
     results, stats = read_batches(cells)
     assert stats['batch_calls'] == 1
     assert stats['multiline_fallback'] == stats['batch_fallback'] == 0
-    for field, expected in [('quantity', '1'), ('price', '3960T')]:
+    for field, expected in [('quantity', '1'), ('price', '3960')]:
         result = results[5, field]
         assert result['numeric_roi']['reason'] == 'compact_number_band'
         assert result['text'] == expected
+    assert results[5,'price']['numeric_roi']['currency_removed_before_ocr']
 
 
 def test_compact_band_retains_tiny_decimal_mark():

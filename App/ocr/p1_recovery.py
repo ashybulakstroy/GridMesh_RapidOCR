@@ -9,14 +9,21 @@ import cv2
 from .engine import read_cell
 from .p1_batch import read_batches
 from .p1_numbers import parse_number, arithmetic_equal
+from .numeric_roi import prepare_numeric_input
+from ..config import setting
 
 
 def _retry(cell, image):
+    roi = None
+    if cell['column_id'] == 'price' and setting('OCR_PRICE_CURRENCY_CROP','1') == '1':
+        image,roi = prepare_numeric_input(image,cell['column_id'])
     enlarged = cv2.resize(image, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
     padded = cv2.copyMakeBorder(enlarged, 12, 12, 12, 12,
                                 cv2.BORDER_CONSTANT, value=(255, 255, 255))
     candidate = read_cell(padded, cell['row_id'], cell['column_id'], (0, 0), force_single=True)
     candidate['strategy'] = 'p1_selective_2x'
+    if roi is not None:
+        candidate['numeric_roi'] = roi
     candidate['source_bbox'] = cell.get('source_bbox')
     candidate['bbox'] = cell['bbox']
     candidate['blocks'] = [{'text':candidate['text'], 'confidence':candidate['confidence'],

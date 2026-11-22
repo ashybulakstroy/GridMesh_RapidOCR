@@ -17,7 +17,7 @@ from .ocr.p1_batch import BatchCell, read_batches, read_cells
 from .ocr.cell_mode import read_parallel
 from .ocr.e4_adaptive_early import adaptive_collect, make_early_snapshot, compare_early_final
 from .ocr.p1_numbers import parse_number
-from .ocr.numeric_roi import crop_numeric_ink
+from .ocr.numeric_roi import crop_numeric_ink, prepare_numeric_input
 from .ocr.price_candidate import prepare_price_candidate
 from .ocr.p1_recovery import recover_invalid_and_rows, recover_total_mismatch
 from .ocr.p1_double_retry import retry_suspect_cells
@@ -146,7 +146,11 @@ def recover_tax_below_grid(image, rect, columns, row_id):
         band = name_band if field == 'name' else observed_band(field)
         if band is None:
             return None
-        result = name if field == 'name' else read_line(band[0])
+        price_roi = None
+        prepared = band[0]
+        if field == 'price':
+            prepared, price_roi = prepare_numeric_input(prepared, field)
+        result = name if field == 'name' else read_line(prepared)
         if not result or result['confidence'] < .65:
             return None
         if field != 'name' and number(result['text']) is None:
@@ -160,6 +164,8 @@ def recover_tax_below_grid(image, rect, columns, row_id):
                         'source_bbox':box, 'cell_id':f'{row_id}-{field}',
                         'row_id':row_id, 'column_id':field, 'blocks':[],
                         'strategy':'visible_tax_below_grid'}
+        if price_roi is not None:
+            cells[field]['numeric_roi'] = price_roi
     cells['number'] = {'text':'', 'confidence':None, 'derived':True, 'blocks':[],
                        'source_bbox':[], 'row_id':row_id, 'column_id':'number'}
     q,p = number(cells['quantity']['text']),number(cells['price']['text'])
@@ -951,13 +957,13 @@ def collect_v5_candidates(crops):
         out['attempted'].add((row_id,field))
         try:
             with rec_scope([(row_id,field)], 'v5_numeric_candidate'):
-                prepared,_ = crop_numeric_ink(crop)
+                prepared,roi = prepare_numeric_input(crop,field)
                 alternative=read_line(prepared)
             if alternative:
                 out['observations'].append({'row_id':row_id,'field':field,
                                             'text':alternative['text'],
-                                            'confidence':alternative['confidence']})
-                if field == 'price':
+                                            'confidence':alternative['confidence'], 'numeric_roi':roi})
+                if field == 'price' and not roi.get('currency_removed_before_ocr'):
                     price_crop=prepare_price_candidate(crop,alternative['text'])
                     if price_crop is not None:
                         with rec_scope([(row_id,field)], 'price_digits_candidate'):

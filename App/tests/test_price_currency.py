@@ -15,6 +15,7 @@ def test_real_digits_are_not_currency(text):
 
 @pytest.mark.parametrize(('row','raw','expected'),[(14,'3807',380),(28,'17',1),(21,'1480T',1480)])
 def test_user_price_currency_without_additional_ocr(monkeypatch,row,raw,expected):
+    monkeypatch.setenv('OCR_PRICE_CURRENCY_CROP','0')  # legacy post-OCR recovery
     path=Path(__file__).parent/'fixtures'/f'price_currency_{expected}.png'
     image=cv2.imread(str(path))
     class Recognizer:

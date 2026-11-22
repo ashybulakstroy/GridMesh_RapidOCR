@@ -1,9 +1,9 @@
-"""Conservative numeric ink crop; currency and all visible digits are kept."""
+"""Numeric ink ROI and evidence-based exclusion of a price currency glyph."""
 import cv2
 import numpy as np
 
 
-def split_price_currency(image):
+def split_price_currency(image, *, clean_rule_fragments=False):
     """Remove only a separated, observed T-shaped currency glyph from OCR input."""
     if image is None or not image.size or min(image.shape[:2]) < 8:
         return image, None
@@ -13,8 +13,20 @@ def split_price_currency(image):
     ink[np.count_nonzero(ink,axis=1) > w*.94,:] = 0
     ink[:,np.count_nonzero(ink,axis=0) > h*.94] = 0
     count, labels, stats, _ = cv2.connectedComponentsWithStats(ink)
+    glyph_heights = [s[cv2.CC_STAT_HEIGHT] for s in stats[1:]
+                     if s[cv2.CC_STAT_AREA] >= 8 and s[cv2.CC_STAT_HEIGHT] >= 6
+                     and .15 <= s[cv2.CC_STAT_WIDTH]/s[cv2.CC_STAT_HEIGHT] <= 2
+                     and s[cv2.CC_STAT_HEIGHT] < h*.9]
+    small_height = max(3, float(np.median(glyph_heights))*.4) if glyph_heights else 3
     for component in range(1,count):
-        if stats[component,cv2.CC_STAT_AREA] < 3:
+        bw = stats[component,cv2.CC_STAT_WIDTH]
+        bh = stats[component,cv2.CC_STAT_HEIGHT]
+        # Residual table-rule fragments can share the currency's x range and
+        # make its measured height include the cell's upper border. Ignore
+        # these shallow strokes only in the detection mask, never OCR pixels.
+        shallow_rule = bh <= max(3, round(h*.08)) and bw >= max(4, 3*bh)
+        if (stats[component,cv2.CC_STAT_AREA] < 3 or
+                (clean_rule_fragments and (shallow_rule or bh < small_height))):
             ink[labels == component] = 0
     occupied = np.count_nonzero(ink,axis=0) > 0
     edges = np.diff(np.r_[False,occupied,False].astype(np.int8))
@@ -61,6 +73,43 @@ def split_price_currency(image):
     return image[:,:cut].copy(), {'symbol':'₸', 'strategy':'separate_t_shape',
                                   'numeric_glyph_count':digit_count,
                                   'bbox':[int(left),top,int(right),bottom]}
+
+
+def exclude_price_currency(image, roi):
+    """V3's spatial split, applied BEFORE recognition, with cell-local bounds.
+
+    Decimal punctuation stays in the image. An unconfirmed suffix stays intact;
+    no text substitution or guessed digit is used to choose the rectangle.
+    """
+    if image is None or not image.size:
+        return image, roi
+    h,w = image.shape[:2]
+    x,y = roi.get('offset', [0,0])
+    cropped,currency = split_price_currency(image, clean_rule_fragments=True)
+    info = {**roi, 'ocr_roi_bbox':[x,y,x+w,y+h],
+            'coordinate_space':'gridmesh_cell_pixels',
+            'currency_removed_before_ocr':False}
+    if currency is None:
+        info['currency_crop_status'] = 'not_confirmed'
+        return image,info
+    a,b,c,d = currency['bbox']
+    info.update(changed=True, size=[cropped.shape[1],cropped.shape[0]], offset=[x,y],
+                original_size=roi.get('original_size',[w,h]),
+                ocr_roi_bbox=[x,y,x+cropped.shape[1],y+cropped.shape[0]],
+                currency_removed_before_ocr=True, currency_crop_status='excluded',
+                currency={**currency,'bbox':[x+a,y+b,x+c,y+d],
+                          'removed_from_ocr_input':True})
+    return cropped,info
+
+
+def prepare_numeric_input(image, field):
+    """Use the same currency-free image preparation in primary/recovery paths."""
+    cropped,roi = crop_numeric_ink(image)
+    if field == 'price':
+        from ..config import setting
+        if setting('OCR_PRICE_CURRENCY_CROP','1') == '1':
+            return exclude_price_currency(cropped,roi)
+    return cropped,roi
 
 
 def _discard_isolated_rim_strokes(ink):

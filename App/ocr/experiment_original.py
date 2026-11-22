@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 
 from ..geometry.service import cell_polygon
-from .numeric_roi import crop_numeric_ink
+from .numeric_roi import crop_numeric_ink, prepare_numeric_input
 from .p1_numbers import parse_number
 from .experiment_rec_trace import rec_scope
 
@@ -103,7 +103,7 @@ class OriginalNumericCache:
                 continue
             started=perf_counter()
             try:
-                prepared,_=crop_numeric_ink(raw)
+                prepared,_=prepare_numeric_input(raw,key[1])
                 with rec_scope([key], 'original_independent_second_pass'):
                     result=model_pool.recognize(second,prepared,'original_numeric_roi_second')
                 record={'row_id':key[0], 'field':key[1], 'model_id':second,
@@ -158,7 +158,7 @@ class OriginalNumericCache:
             started=perf_counter()
             info={'row_id':key[0],'field':key[1]}
             try:
-                prepared,meta=crop_numeric_ink(self.crops[key])
+                prepared,meta=prepare_numeric_input(self.crops[key],key[1])
                 info['roi']=meta
                 with rec_scope([key], 'source_pixel_recovery'):
                     successful=[]
