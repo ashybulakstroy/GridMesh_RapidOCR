@@ -89,7 +89,8 @@ def test_real_cell_mode_preserves_lower_numeric_rows(monkeypatch):
     assert result['numeric_matrix']['fallback_used'] is False
     assert result['geometry']['ocr_mode']=='cell'
     stats=result['geometry']['ocr_batch']
-    assert stats['parallel_lanes']==2 and stats['batch_calls']==0
+    assert stats['parallel_lanes']==3 and stats['batch_calls']==0
+    assert stats['columns_parallel']
     assert stats['numeric_roi_skipped']==0
     for row_id,quantity,price in [(15,5,2000),(16,20,60)]:
         row=next(row for row in result['rows'] if row['row_id']==row_id)
@@ -158,3 +159,127 @@ def test_candidate_errors_are_preserved_and_other_cells_continue(monkeypatch):
     data=pipeline.collect_v5_candidates({(1,'price'):image,(2,'price'):image})
     assert len(data['attempted'])==2 and len(data['errors'])==1
     assert data['observations'][0]['text']=='60'
+
+
+def test_names_numbers_and_footer_overlap_with_trace_and_separate_locks(monkeypatch):
+    from App.ocr.engine import _lock
+    from App.ocr.debug_performance import activate_telemetry, deactivate_telemetry, get_debug
+    monkeypatch.setenv('OCR_TABLE_PARALLEL', '1')
+    monkeypatch.setenv('LOG_LEVEL', 'DEBUG')
+    ready = {lane: Event() for lane in ('footer', 'table_names', 'table_numeric')}
+    tracker = RecTracker()
+    token = activate(tracker)
+    telemetry = activate_telemetry('overlap')
+    debug = get_debug()
+    cells = [SimpleNamespace(row_id=1, column_id=field) for field in ('name', 'quantity', 'price')]
+
+    def arrive():
+        ready[_LANE.get()].set()
+        assert all(event.wait(2) for event in ready.values())
+
+    def footer():
+        with _lock:
+            arrive()
+            record_rec(keys=['receipt_total'], ms=1)
+        return {'total':'100'}
+
+    def table(items, **kwargs):
+        with _lock:
+            arrive()
+            result = {(c.row_id,c.column_id):{'text':c.column_id} for c in items}
+            record_rec(keys=[f'{c.row_id}:{c.column_id}' for c in items], ms=1)
+        return result, {'requested':len(items), 'cell_calls':len(items), 'errors':[],
+                        'numeric_roi_ms':4 if _LANE.get()=='table_numeric' else 0,
+                        'numeric_roi_skipped':0}
+
+    try:
+        result, stats, total = cell_mode.read_parallel(cells, footer, table)
+        assert get_debug() is debug
+    finally:
+        deactivate_telemetry(telemetry)
+        deactivate(token)
+    assert total['total']=='100'
+    assert set(result)=={(1,'name'),(1,'quantity'),(1,'price')}
+    assert stats['requested']==stats['cell_calls']==3
+    assert stats['numeric_roi_ms']==4 and stats['numeric_roi_skipped']==0
+    assert stats['parallel_lanes']==3 and stats['columns_parallel']
+    assert set(tracker.export()['per_cell'])=={'receipt_total','1:name','1:quantity','1:price'}
+    assert {lane['lane'] for lane in debug.lanes}=={'table','footer','table_names','table_numeric'}
+    assert _LANE.get()=='table'
+
+
+def test_column_failure_retries_only_failed_group(monkeypatch):
+    monkeypatch.setenv('OCR_TABLE_PARALLEL', '1')
+    cells = [SimpleNamespace(row_id=1, column_id=f) for f in ('name','price')]
+    attempts = []
+    def reader(items, **kwargs):
+        if items[0].column_id=='name':
+            raise RuntimeError('name failure')
+        return {(1,'price'):{'text':'100'}}, {'requested':1,'cell_calls':1,'errors':[]}
+    def fallback(items, **kwargs):
+        attempts.extend(c.column_id for c in items)
+        assert _LANE.get()=='table_names'
+        return {(1,'name'):{'text':'product'}}, {'requested':1,'batch_calls':1,'errors':[]}
+    monkeypatch.setattr(cell_mode,'read_batches',fallback)
+    result, stats = cell_mode.read_columns(cells,reader)
+    assert attempts==['name']
+    assert result[(1,'price')]['text']=='100'
+    assert stats['cell_fallback']==1 and stats['batch_calls']==1
+    assert any('name failure' in e for e in stats['errors'])
+
+
+def test_sequential_switch_and_single_group_do_not_create_worker_lanes(monkeypatch):
+    cells = [SimpleNamespace(row_id=1,column_id=f) for f in ('name','price')]
+    def reader(items, **kwargs):
+        assert _LANE.get()=='table'
+        return {'retained':True}, {'requested':len(items)}
+    monkeypatch.setenv('OCR_TABLE_PARALLEL','0')
+    result, stats = cell_mode.read_columns(cells,reader)
+    assert result=={'retained':True} and not stats['columns_parallel']
+    monkeypatch.setenv('OCR_TABLE_PARALLEL','1')
+    _, stats = cell_mode.read_columns(cells[:1],reader)
+    assert not stats['columns_parallel']
+
+
+def test_secondary_models_are_cached_per_lane(monkeypatch):
+    import rapidocr
+    from App.ocr import experiment_models
+    monkeypatch.setattr(experiment_models,'_SESSIONS',{})
+    monkeypatch.setattr(rapidocr,'RapidOCR',lambda **kwargs:object())
+    pool=experiment_models.ExperimentModelPool(
+        catalog={}, read=lambda name,default:'0' if name=='OCR_E2_ENABLE' else default)
+    model={'enabled':True,'ocr_version':'PPOCRV6','model_type':'TINY','lang':'en'}
+    with inference_lane('table_numeric'):
+        numeric=pool._get_session('v6_tiny_official',model)
+        assert numeric is pool._get_session('v6_tiny_official',model)
+    with inference_lane('footer'):
+        footer=pool._get_session('v6_tiny_official',model)
+        assert footer is not numeric
+        assert footer is pool._get_session('v6_tiny_official',model)
+
+
+@pytest.mark.parametrize('budget', [2,4])
+def test_table_thread_budget_does_not_change_footer_budget(monkeypatch,budget):
+    from App.ocr.engine import onnx_threads
+    monkeypatch.setenv('OCR_ONNX_THREADS','2')
+    monkeypatch.setenv('OCR_TABLE_ONNX_THREADS',str(budget))
+    for lane in ('table_names','table_numeric'):
+        with inference_lane(lane):
+            assert onnx_threads()==budget//2
+    for lane in ('footer','table'):
+        with inference_lane(lane):
+            assert onnx_threads()==2
+
+
+@pytest.mark.parametrize('threads', [1,2,3,4])
+def test_parallel_columns_divide_configured_thread_budget(monkeypatch,threads):
+    from App.ocr.engine import onnx_threads
+    monkeypatch.setenv('OCR_ONNX_THREADS',str(threads))
+    assert onnx_threads()==threads
+    with inference_lane('table_names'):
+        names=onnx_threads()
+    with inference_lane('table_numeric'):
+        numeric=onnx_threads()
+    assert names+numeric==max(2,threads)
+    with inference_lane('footer'):
+        assert onnx_threads()==threads

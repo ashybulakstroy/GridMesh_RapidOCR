@@ -27,7 +27,8 @@ def test_real_receipt_persists_diagnostics_without_changing_total(monkeypatch,le
         assert debug['memory_mb']['max_rss_observed_at_checkpoints']>=debug['memory_mb']['rss_start']
         if mode=='cell':
             assert len(debug['ocr_cells'])>0 and not debug['ocr_batches']
-            assert {r['lane'] for r in debug['ocr_lanes']}=={'table','footer'}
+            assert {r['lane'] for r in debug['ocr_lanes']}=={
+                'table','footer','table_names','table_numeric'}
         else:
             assert debug['ocr_batches'] and not debug['ocr_cells']
 

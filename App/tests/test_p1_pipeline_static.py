@@ -15,7 +15,7 @@ def test_p1_provides_recognition_metrics_and_source_positions(photo, mode, monke
     assert batch['requested']>=9
     if mode=='cell':
         assert batch['cell_calls']>=1
-        assert batch['parallel_lanes']==2
+        assert batch['parallel_lanes']==3
     else:
         assert batch['batch_calls']>=1
     assert result['geometry']['ocr_recovery']['initial']['attempted']>=0

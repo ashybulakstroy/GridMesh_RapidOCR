@@ -17,3 +17,7 @@ benchmark/reports/*
 data/experiment_reports/
 
 data/experiments/gridmesh_debug_performance_v2/
+
+.venv_numbers/
+
+data/models/cnocr/

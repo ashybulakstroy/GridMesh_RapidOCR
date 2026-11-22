@@ -17,6 +17,7 @@ from .ocr.p1_batch import BatchCell, read_batches, read_cells
 from .ocr.cell_mode import read_parallel
 from .ocr.p1_numbers import parse_number
 from .ocr.numeric_roi import crop_numeric_ink
+from .ocr.price_candidate import prepare_price_candidate
 from .ocr.p1_recovery import recover_invalid_and_rows, recover_total_mismatch
 from .ocr.p1_double_retry import retry_suspect_cells
 from .ocr.experiment_matrix import CandidateBook, solve_matrix
@@ -359,7 +360,9 @@ def _process(data, profile, job_dir, rectify):
                 crop_map[(idx,field)] = crop
     parallel_footer = None
     if ocr_mode == 'cell':
-        profile.phase('Поячеечный OCR: итог и столбцы таблицы параллельно')
+        profile.phase('Поячеечный OCR: итог, названия и цифры параллельно'
+                      if setting('OCR_TABLE_PARALLEL', '1') == '1'
+                      else 'Поячеечный OCR: итог и таблица параллельно')
         def read_footer_and_candidates():
             footer_start = time.perf_counter()
             footer_result = read_printed_footer(image, table_source_bottom(rect,xs,ys))
@@ -569,7 +572,8 @@ def _process(data, profile, job_dir, rectify):
             candidate_failures = collected['errors']
             for candidate in collected['observations']:
                 book.add(candidate['row_id'],candidate['field'],candidate['text'],
-                         candidate['confidence'],'v5_numeric_candidate',model='v5_cyrillic_mobile')
+                         candidate['confidence'],candidate.get('path','v5_numeric_candidate'),
+                         model=candidate.get('model_id','v5_cyrillic_mobile'))
             if candidate_failures:
                 geometry['warnings'].append('Не удалось собрать все резервные OCR-варианты чисел; проверьте результат.')
             seed = seed_printed_vat(rows, book)
@@ -885,6 +889,16 @@ def collect_v5_candidates(crops):
                 out['observations'].append({'row_id':row_id,'field':field,
                                             'text':alternative['text'],
                                             'confidence':alternative['confidence']})
+                if field == 'price':
+                    price_crop=prepare_price_candidate(crop,alternative['text'])
+                    if price_crop is not None:
+                        with rec_scope([(row_id,field)], 'price_digits_candidate'):
+                            item=read_line(price_crop)
+                        if item and item.get('text'):
+                            out['observations'].append({'row_id':row_id,'field':field,
+                                'text':item['text'],'confidence':item.get('confidence'),
+                                'model_id':'v5_cyrillic_mobile',
+                                'path':'price_digits_candidate'})
         except Exception as exc:
             out['errors'].append({'row_id':row_id,'field':field,
                                   'error':f'{type(exc).__name__}: {exc}'})

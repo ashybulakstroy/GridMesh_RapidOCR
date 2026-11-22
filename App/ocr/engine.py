@@ -15,7 +15,8 @@ _LANE = ContextVar('ocr_engine_lane', default='table')
 _NAME_MODEL = ContextVar('ocr_name_model', default='v5_cyrillic_mobile')
 _LAST_REC_MODEL = ContextVar('ocr_last_rec_model', default=None)
 _models = {}
-_locks = {'table': threading.RLock(), 'footer': threading.RLock()}
+_locks = {lane: threading.RLock() for lane in
+          ('table', 'footer', 'table_names', 'table_numeric')}
 
 
 class _LaneLock:
@@ -38,6 +39,19 @@ def inference_lane(lane):
         _LANE.reset(token)
 
 
+def onnx_threads():
+    """Divide the existing table thread budget between simultaneous columns."""
+    configured = positive_int('OCR_ONNX_THREADS', 2)
+    lane = _LANE.get()
+    if lane == 'table_names':
+        table_budget = positive_int('OCR_TABLE_ONNX_THREADS', configured)
+        return max(1, (table_budget + 1) // 2)
+    if lane == 'table_numeric':
+        table_budget = positive_int('OCR_TABLE_ONNX_THREADS', configured)
+        return max(1, table_budget // 2)
+    return configured
+
+
 def engine():
     key = (_LANE.get(), 'primary')
     if key not in _models:
@@ -52,7 +66,7 @@ def engine():
                     'Det.model_type': ModelType.MOBILE,
                     'Global.use_cls': False,
                     'Global.text_score': 0.25,
-                    'EngineConfig.onnxruntime.intra_op_num_threads': positive_int('OCR_ONNX_THREADS', 2),
+                    'EngineConfig.onnxruntime.intra_op_num_threads': onnx_threads(),
                     'EngineConfig.onnxruntime.inter_op_num_threads': 1,
                 })
     return _models[key]
@@ -75,7 +89,7 @@ def footer_engine():
                     'Det.limit_side_len': 736,
                     'Global.use_cls': False,
                     'Global.text_score': 0.25,
-                    'EngineConfig.onnxruntime.intra_op_num_threads': positive_int('OCR_ONNX_THREADS', 2),
+                    'EngineConfig.onnxruntime.intra_op_num_threads': onnx_threads(),
                     'EngineConfig.onnxruntime.inter_op_num_threads': 1,
                 })
     return _models[key]
@@ -174,7 +188,7 @@ def english_engine():
                     'Rec.lang_type': LangRec.EN, 'Rec.ocr_version': OCRVersion.PPOCRV5,
                     'Rec.model_type': ModelType.MOBILE, 'Global.use_det': False,
                     'Global.use_cls': False,
-                    'EngineConfig.onnxruntime.intra_op_num_threads': positive_int('OCR_ONNX_THREADS', 2),
+                    'EngineConfig.onnxruntime.intra_op_num_threads': onnx_threads(),
                     'EngineConfig.onnxruntime.inter_op_num_threads': 1,
                 })
     return _models[key]
@@ -220,7 +234,7 @@ def _read_observed_name_lines(image, row_id, column_id, offset):
         else:
             bands.append((start,end))
     bands = [(int(a),int(b)) for a,b in bands if b-a >= 6]
-    if not 2 <= len(bands) <= 4:
+    if not 2 <= len(bands) <= 8:
         return None
     blocks = []
     for start,end in bands:

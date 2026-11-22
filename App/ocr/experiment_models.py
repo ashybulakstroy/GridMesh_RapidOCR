@@ -100,14 +100,16 @@ class ExperimentModelPool:
         return list(self.selected.get(task,()))
 
     def _get_session(self,model_id,model):
-        from .engine import engine, _lock
+        from .engine import engine, _lock, _LANE, onnx_threads
         if model_id=='v5_cyrillic_mobile':
             return engine()
         status=inspect_model(model,self.root)
         if status['status'] not in ('ready','rapidocr_managed_cache_unverified'):
             raise FileNotFoundError(f"{model_id}: {status['status']} {status.get('path','')}")
         path=status.get('path')
-        token=(model_id,path,str(self.root))
+        # RapidOCR wraps mutable pre/post-processing state as well as ONNX.
+        # Each inference lane must own its worker, including secondary models.
+        token=(_LANE.get(),model_id,path,str(self.root))
         with _lock:
             if token not in _SESSIONS:
                 from rapidocr import RapidOCR
@@ -115,7 +117,7 @@ class ExperimentModelPool:
                 params={
                     'Global.use_det':False,'Global.use_cls':False,
                     'Rec.rec_batch_num':1,
-                    'EngineConfig.onnxruntime.intra_op_num_threads':positive_int('OCR_ONNX_THREADS',2),
+                    'EngineConfig.onnxruntime.intra_op_num_threads':onnx_threads(),
                     'EngineConfig.onnxruntime.inter_op_num_threads':1,
                 }
                 if path:

@@ -107,6 +107,8 @@ class DebugPerformance:
         config = {
             'log_level': 'DEBUG',
             'table_mode': setting('OCR_TABLE_MODE', 'cell'),
+            'table_columns_parallel': setting('OCR_TABLE_PARALLEL', '1') == '1',
+            'table_onnx_thread_budget': positive_int('OCR_TABLE_ONNX_THREADS', positive_int('OCR_ONNX_THREADS', 2)),
             'primary_recognizer': 'PP-OCRv5-cyrillic-mobile',
             'name_recognizer': 'v6_tiny_cyrillic_optional',
             'quantity_price_recognizer': 'v6_tiny_official',
