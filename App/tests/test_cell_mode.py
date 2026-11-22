@@ -81,6 +81,12 @@ def test_real_cell_mode_preserves_lower_numeric_rows(monkeypatch):
     if not full.exists():pytest.skip('Local performance receipt is unavailable')
     result=process(full.read_bytes())
     assert result['math_match'] and parse_number(result['total'])==252161
+    assert result['numeric_matrix']['candidate_collection']['v5_calls'] >= 34
+    book=result['numeric_candidate_book']['cells']
+    for key,value in [('4:price','2480'),('5:price','230'),('16:price','60')]:
+        assert any(o['number']==value and o['path']=='v5_numeric_candidate' for o in book[key]['observations'])
+    assert result['numeric_matrix']['initial_status'] in ('unique_math_match','ambiguous')
+    assert result['numeric_matrix']['fallback_used'] is False
     assert result['geometry']['ocr_mode']=='cell'
     stats=result['geometry']['ocr_batch']
     assert stats['parallel_lanes']==2 and stats['batch_calls']==0

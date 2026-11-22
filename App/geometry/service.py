@@ -1,6 +1,8 @@
 """Automatic observed-grid geometry, with explicit safety warnings."""
 import cv2
 import numpy as np
+from time import perf_counter
+from ..ocr.debug_performance import get_debug
 from .lab_adapter_gridrefine_v3 import detect_for_lab
 from .fold import recover_fold, recover_left_edges
 from .geometry_lab.algorithms import mesh, Result, intersection
@@ -73,7 +75,12 @@ def _recover_observed_horizontal(image, physical, automatic):
     return physical, 0
 
 def build_grid(image, *, rectify=False, phase=None):
+    _debug=get_debug()
+    _grid_t0=perf_counter() if _debug is not None else None
     data, report = detect_for_lab(image)
+    if _debug is not None:
+        _debug.add_geometry('autogrid_gridrefine_v3',(perf_counter()-_grid_t0)*1000,
+                            {'found':data is not None})
     automatic_data = data
     recovered_horizontal = 0
     method = 'AutoGrid GridRefine V3'
@@ -86,7 +93,11 @@ def build_grid(image, *, rectify=False, phase=None):
     if invalid_spacing:
         data = None
     if data is None or not 5 <= len(data['vertical']) <= 9 or len(data['horizontal']) < 3:
+        _physical_t0=perf_counter() if _debug is not None else None
         physical, physical_report = detect_physical_graph(image)
+        if _debug is not None:
+            _debug.add_geometry('physical_grid_graph_v3',(perf_counter()-_physical_t0)*1000,
+                                {'found':physical is not None})
         # Retain the more complete horizontal observations only when the
         # independent graph confirms all four detected vertical boundaries
         # and supplies exactly one additional physical boundary.
@@ -107,19 +118,32 @@ def build_grid(image, *, rectify=False, phase=None):
         else:
             data, report, method = physical, physical_report, 'Physical Grid Graph V3'
     if data is not None and method == 'Physical Grid Graph V3':
+        _ridge_t0=perf_counter() if _debug is not None else None
         data, recovered_horizontal = _recover_observed_horizontal(image, data, automatic_data)
+        if _debug is not None:
+            _debug.add_geometry('recover_observed_horizontal',(perf_counter()-_ridge_t0)*1000,
+                                {'recovered':recovered_horizontal})
     if data is None:
         raise ValueError('Не удалось уверенно найти печатную сетку таблицы. Загрузите другое фото.')
     if not 5 <= len(data['vertical']) <= 9 or len(data['horizontal']) < 3:
         raise ValueError('Не удалось определить границы столбцов товарной таблицы. Требуется проверка фото.')
     fold_recovered = 0
     if method == 'AutoGrid GridRefine V3':
+        _fold_t0=perf_counter() if _debug is not None else None
         data, fold_recovered = recover_fold(image, data)
+        if _debug is not None:
+            _debug.add_geometry('recover_fold',(perf_counter()-_fold_t0)*1000,
+                                {'recovered':fold_recovered})
+    _left_t0=perf_counter() if _debug is not None else None
     data, left_recovered = recover_left_edges(image, data)
+    if _debug is not None:
+        _debug.add_geometry('recover_left_edges',(perf_counter()-_left_t0)*1000,
+                            {'recovered':left_recovered})
     H, W = image.shape[:2]
     vs, hs = data['vertical'], data['horizontal']
     if phase:
         phase('Создание сетки Grid Mesh')
+    _mesh_t0=perf_counter() if _debug is not None else None
     if not rectify:
         intersections = np.array([[intersection(v,h,image.shape) for v in vs] for h in hs], dtype=float)
         if not np.isfinite(intersections).all(): raise ValueError('Некорректные пересечения линий сетки')
@@ -139,6 +163,10 @@ def build_grid(image, *, rectify=False, phase=None):
                          'cell_mesh':mesh(image, data, sample_image=False), 'source_image':image})
     else:
         result = mesh(image, data)
+    if _debug is not None:
+        _debug.add_geometry('grid_mesh_construction',(perf_counter()-_mesh_t0)*1000,
+                            {'rectify_full_grid':bool(rectify)})
+        _overlay_t0=perf_counter()
     check = safety(result.info['cell_mesh'] if not rectify else result, image.shape)
     review = bool(report.get('autogrid', {}).get('geometry_review_required'))
     warnings = []
@@ -170,6 +198,8 @@ def build_grid(image, *, rectify=False, phase=None):
             cv2.line(overlay, (round(x), round(result.ys[0])), (round(x), round(result.ys[-1])), (255, 100, 0), 2)
         for y in result.ys:
             cv2.line(overlay, (round(result.xs[0]), round(y)), (round(result.xs[-1]), round(y)), (255, 100, 0), 2)
+    if _debug is not None:
+        _debug.add_geometry('safety_and_overlay',(perf_counter()-_overlay_t0)*1000)
     return result, overlay, {'method': method, 'autogrid_vertical_count': auto_vertical_count,
                              'physical_detection_selection': report.get('selection'),
                              'fold_recovered_horizontal': fold_recovered, 'left_recovered_horizontal': left_recovered,

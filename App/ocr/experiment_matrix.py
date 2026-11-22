@@ -123,10 +123,10 @@ class CandidateBook:
                 key = cls.key(row['row_id'], field)
                 original = initial.get(key)
                 if original is not None:
-                    book.add(row['row_id'], field, original['text'], original.get('confidence'), 'gridmesh_initial')
+                    book.add(row['row_id'], field, original['text'], original.get('confidence'), 'gridmesh_initial', model=original.get('model_id','v5_cyrillic_mobile'))
                 cell = row['cells'][field]
                 book.add(row['row_id'], field, cell['text'], cell.get('confidence'),
-                         cell.get('strategy') or 'gridmesh_final')
+                         cell.get('strategy') or 'gridmesh_final', model=cell.get('model_id','v5_cyrillic_mobile'))
                 # Recoveries may have already replaced the original cell; audit both.
                 for item in cell.get('ocr_attempts', []):
                     book.add(row['row_id'], field, item.get('alternative_text'),

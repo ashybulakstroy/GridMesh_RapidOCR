@@ -1,5 +1,5 @@
 """Per-job wall/process CPU timing, matching project 17's measurement units."""
-from threading import Event, Thread
+from threading import Event, Thread, Lock
 from time import perf_counter, process_time
 import os
 import psutil
@@ -12,6 +12,8 @@ class OCRPerformance:
         self.phase_wall, self.phase_cpu = self.start_wall, self.start_cpu
         self.name = None
         self.samples = []
+        self.issues = []
+        self.issues_lock = Lock()
         self.cpu_now = 0.0
         self.cpu_peak = 0.0
         self.system_cpu = 0.0
@@ -51,6 +53,18 @@ class OCRPerformance:
         self.name, self.phase_wall, self.phase_cpu = name, now, cpu
         self._publish()
 
+    def note_issue(self, *, source, operation, kind, severity='error', error=None,
+                   context=None, fallback=None):
+        item={'source':str(source),'operation':str(operation),
+              'kind':str(kind),'severity':str(severity)}
+        if error is not None:
+            item['exception_type']=type(error).__name__
+            item['message']=str(error)[:300]
+        if context:item['context']=context
+        if fallback:item['fallback']=fallback
+        with self.issues_lock:
+            self.issues.append(item)
+
     def finish(self):
         self.phase(None)
         self.stop_event.set()
@@ -62,6 +76,6 @@ class OCRPerformance:
                 'peak_process_cpu_percent':self.cpu_peak, 'cpu_count':os.cpu_count(),
                 'peak_system_cpu_percent':self.system_peak,
                 'cpu_history':list(self.cpu_history),
-                'samples':self.samples,
+                'samples':self.samples, 'issues':list(self.issues),
                 'note':'CPU% процесса: 100% соответствует одному логическому ядру; '
                        'замер процесса включает все его потоки и может включать фоновую работу сервера.'}

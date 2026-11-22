@@ -11,6 +11,7 @@ from time import perf_counter
 
 from ..config import ROOT, setting, positive_int
 from .experiment_rec_trace import record_rec
+from .debug_performance import report_issue
 
 # Reuse secondary ONNX sessions across receipts, never one per cell.
 _SESSIONS = {}
@@ -167,6 +168,9 @@ class ExperimentModelPool:
                   'stage':stage,'error':f'{type(exc).__name__}: {exc}',
                   'wall_ms':round((perf_counter()-stamp)*1000,3)}
             self.errors.append(item)
+            report_issue(source='ExperimentModelPool',operation=stage,
+                         kind='model_exception',error=exc,
+                         context={'model_id':model_id},fallback='preserve_original')
             return item
 
     def stats(self):

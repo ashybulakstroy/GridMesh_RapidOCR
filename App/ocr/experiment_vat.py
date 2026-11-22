@@ -43,7 +43,8 @@ def seed_printed_vat(rows, book):
     row = next(r for r in rows if r['row_id'] == rid)
     cell = row['cells'][field]
     book.add_vat(cell.get('text'), cell.get('confidence'),
-                 'vat_row_primary_'+field, row_id=rid, field=field)
+                 'vat_row_primary_'+field, row_id=rid, field=field,
+                 model=cell.get('model_id','v5_cyrillic_mobile'))
     return {'source':{'row_id':rid,'field':field}, 'status':'observed_vat_row'}
 
 

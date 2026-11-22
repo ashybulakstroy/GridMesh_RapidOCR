@@ -9,9 +9,11 @@ import cv2
 import re
 from rapidocr import RapidOCR
 from rapidocr.utils.typings import LangRec, OCRVersion, ModelType
-from ..config import positive_int
+from ..config import positive_int, setting
 
 _LANE = ContextVar('ocr_engine_lane', default='table')
+_NAME_MODEL = ContextVar('ocr_name_model', default='v5_cyrillic_mobile')
+_LAST_REC_MODEL = ContextVar('ocr_last_rec_model', default=None)
 _models = {}
 _locks = {'table': threading.RLock(), 'footer': threading.RLock()}
 
@@ -82,12 +84,34 @@ def footer_engine():
 def _run_cyrillic_rec(image):
     start=perf_counter()
     try:
-        result=engine()(image,use_det=False,use_cls=False)
-        record_rec(model='v5_cyrillic_mobile',ms=(perf_counter()-start)*1000)
+        model_id=_NAME_MODEL.get()
+        if model_id in ('v6_tiny_cyrillic_optional','v6_tiny_official'):
+            from .experiment_models import ExperimentModelPool, load_catalog
+            key=(_LANE.get(),model_id)
+            if key not in _models:
+                pool=ExperimentModelPool()
+                _models[key]=pool._get_session(model_id,load_catalog()[model_id])
+            session=_models[key]
+            result=session(image,use_det=False,use_cls=False)
+        else:
+            result=engine()(image,use_det=False,use_cls=False)
+        if model_id != 'v5_cyrillic_mobile' and not result.txts:
+            raise RuntimeError('Модель вернула пустой результат')
+        _LAST_REC_MODEL.set(model_id)
+        record_rec(model=model_id,ms=(perf_counter()-start)*1000)
         return result
     except Exception as exc:
-        record_rec(model='v5_cyrillic_mobile',ms=(perf_counter()-start)*1000,
+        record_rec(model=_NAME_MODEL.get(),ms=(perf_counter()-start)*1000,
                    success=False,note=str(exc))
+        if _NAME_MODEL.get() != 'v5_cyrillic_mobile':
+            from .debug_performance import report_issue
+            report_issue(source='RapidOCR',operation='primary_rec',kind='model_exception',error=exc,
+                         context={'model_id':_NAME_MODEL.get()},fallback='v5_cyrillic_mobile')
+            start=perf_counter()
+            result=engine()(image,use_det=False,use_cls=False)
+            _LAST_REC_MODEL.set('v5_cyrillic_mobile')
+            record_rec(model='v5_cyrillic_mobile',ms=(perf_counter()-start)*1000)
+            return result
         raise
 
 def _run_english_rec(image):
@@ -222,6 +246,20 @@ def _read_observed_name_lines(image, row_id, column_id, offset):
 
 
 def read_cell(image, row_id, column_id, offset, *, force_single=False):
+    model = ('v6_tiny_cyrillic_optional' if column_id == 'name' else
+             'v6_tiny_official' if column_id in ('quantity','price') else 'v5_cyrillic_mobile')
+    token = _NAME_MODEL.set(model)
+    last_token = _LAST_REC_MODEL.set(None)
+    try:
+        result = _read_cell(image, row_id, column_id, offset, force_single=force_single)
+        result['model_id'] = _LAST_REC_MODEL.get() or 'v5_cyrillic_mobile'
+        return result
+    finally:
+        _LAST_REC_MODEL.reset(last_token)
+        _NAME_MODEL.reset(token)
+
+
+def _read_cell(image, row_id, column_id, offset, *, force_single=False):
     # Numeric cells and short single-line names benefit from recognition of the
     # whole physical cell: a detector can otherwise miss small digits entirely.
     if column_id == 'name' and not force_single and _has_separate_numeric_lines(image):

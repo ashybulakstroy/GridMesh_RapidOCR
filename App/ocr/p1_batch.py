@@ -10,6 +10,7 @@ import numpy as np
 
 from .engine import engine, read_cell, _has_separate_numeric_lines, _lock
 from .experiment_rec_trace import rec_scope, record_rec
+from .debug_performance import get_debug, report_issue
 from .numeric_roi import crop_numeric_ink, split_price_currency
 import re
 from ..config import setting
@@ -46,6 +47,7 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
     if budget_multiplier not in (1, 2):
         raise ValueError('Допустимый множитель бюджета: 1 или 2')
     if mode not in ('batch','cell'):raise ValueError('Unknown OCR mode: '+mode)
+    _debug=get_debug()
     pending = {'numeric': [], 'text': []}
     out = {}
     stats = {'mode':mode, 'cell_calls':0, 'cell_fallback':0, 'requested':len(cells), 'batch_size':batch_size, 'batch_calls':0,
@@ -96,6 +98,7 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
     for cell in working:
         key = (cell.row_id, cell.column_id)
         if mode == 'cell':
+            _cell_t0=rec_counter() if _debug is not None else None
             try:
                 with rec_scope([key], 'primary_rec_cell'):
                     item = read_cell(cell.image, cell.row_id, cell.column_id, cell.offset)
@@ -103,7 +106,22 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
                 item['strategy'] = 'primary_rec_cell'
                 out[key] = item
                 stats['cell_calls'] += 1
+                if _debug is not None:
+                    _debug.add_cell(cell,(rec_counter()-_cell_t0)*1000,
+                                    strategy=item.get('strategy','primary_rec_cell'))
+                if not str(item.get('text','')).strip():
+                    report_issue(source='RapidOCR',operation='read_cell',
+                                 kind='empty_text',severity='warning',
+                                 context={'cell_id':f'{cell.row_id}:{cell.column_id}',
+                                          'mode':'cell'})
             except Exception as exc:
+                report_issue(source='RapidOCR',operation='read_cell',
+                             kind='cell_exception',error=exc,
+                             context={'cell_id':f'{cell.row_id}:{cell.column_id}'},
+                             fallback='batch')
+                if _debug is not None:
+                    _debug.add_cell(cell,(rec_counter()-_cell_t0)*1000,
+                                    status='error',error=f'{type(exc).__name__}: {exc}')
                 stats['cell_fallback'] += 1
                 stats['errors'].append(f'{key} cell: {type(exc).__name__}: {exc}')
                 # Only failed cells use the existing batch route.
@@ -112,12 +130,20 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
                 out.update(fallback)
             continue
         if _has_separate_numeric_lines(cell.image):
+            _multi_t0=rec_counter() if _debug is not None else None
             with rec_scope([(cell.row_id,cell.column_id)],'primary_multiline_cell'):
                 item = read_cell(cell.image, cell.row_id, cell.column_id, cell.offset)
             item['source_bbox'] = cell.source_bbox
             item['strategy'] = item.get('strategy','legacy_multiline')
             out[key] = item
             stats['multiline_fallback'] += 1
+            if _debug is not None:
+                _debug.add_fallback(cell,(rec_counter()-_multi_t0)*1000,
+                                    reason='multiline',strategy=item.get('strategy','legacy_multiline'))
+            if not str(item.get('text','')).strip():
+                report_issue(source='RapidOCR',operation='read_cell',kind='empty_text',
+                             severity='warning',context={'cell_id':f'{cell.row_id}:{cell.column_id}',
+                                                         'mode':'multiline'})
         else:
             group = 'numeric' if cell.column_id in ('quantity','price','printed_total') else 'text'
             pending[group].append(cell)
@@ -126,6 +152,7 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
         for start in range(0, len(bucket), batch_size):
             chunk = bucket[start:start + batch_size]
             stats['batch_calls'] += 1
+            _batch_t0=rec_counter() if _debug is not None else None
             try:
                 # RapidOCR 3.10.0: RapidOCR.recognize_txt(List[np.ndarray])
                 # calls TextRecognizer and uses its configured rec_batch_num.
@@ -146,12 +173,31 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
                     raise RuntimeError('Batch returned incorrect number of results')
                 for c,txt,score in zip(chunk,response.txts,response.scores):
                     out[(c.row_id,c.column_id)] = _convert(c, txt, score)
+                    if not str(txt).strip():
+                        report_issue(source='RapidOCR',operation='recognize_txt',
+                                     kind='empty_text',severity='warning',
+                                     context={'cell_id':f'{c.row_id}:{c.column_id}',
+                                              'group':group})
+                if _debug is not None:
+                    _debug.add_batch(group,chunk,(rec_counter()-_batch_t0)*1000,status='ok')
             except Exception as exc:
+                report_issue(source='RapidOCR',operation='recognize_txt',
+                             kind='batch_exception_or_invalid_response',error=exc,
+                             context={'group':group, 'size':len(chunk),
+                                      'cell_ids':[f'{c.row_id}:{c.column_id}' for c in chunk]},
+                             fallback='read_cell')
+                if _debug is not None:
+                    _debug.add_batch(group,chunk,(rec_counter()-_batch_t0)*1000,
+                                     status='error',error=f'{type(exc).__name__}: {exc}')
                 stats['batch_fallback'] += len(chunk)
                 stats['errors'].append(f'{group} batch: {type(exc).__name__}: {exc}')
                 for c in chunk:
+                    _fallback_t0=rec_counter() if _debug is not None else None
                     with rec_scope([(c.row_id,c.column_id)],'primary_batch_exception_fallback'):
                         item = read_cell(c.image, c.row_id, c.column_id, c.offset)
+                    if _debug is not None:
+                        _debug.add_fallback(c,(rec_counter()-_fallback_t0)*1000,
+                                            reason='batch_error',strategy='read_cell')
                     item['source_bbox'] = c.source_bbox
                     item['strategy'] = 'legacy_batch_fallback'
                     out[(c.row_id,c.column_id)] = item

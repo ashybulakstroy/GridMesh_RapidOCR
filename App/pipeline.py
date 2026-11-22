@@ -16,17 +16,20 @@ from .ocr.engine import read_cell, read_full, read_line
 from .ocr.p1_batch import BatchCell, read_batches, read_cells
 from .ocr.cell_mode import read_parallel
 from .ocr.p1_numbers import parse_number
+from .ocr.numeric_roi import crop_numeric_ink
 from .ocr.p1_recovery import recover_invalid_and_rows, recover_total_mismatch
 from .ocr.p1_double_retry import retry_suspect_cells
 from .ocr.experiment_matrix import CandidateBook, solve_matrix
 from .ocr.experiment_original import OriginalNumericCache
 from .ocr.experiment_footer import scan_footer
-from .ocr.experiment_vat import scan_printed_vat
+from .ocr.experiment_vat import scan_printed_vat, seed_printed_vat
 from .ocr.experiment_models import ExperimentModelPool
 from .ocr.experiment_rec_trace import RecTracker, activate, deactivate, rec_scope
 from .ocr.experiment_auto import auto_apply_consensus
 from .config import positive_int, setting, ROOT
 from .ocr.ocr_performance import OCRPerformance
+from .ocr.debug_performance import (activate_telemetry, deactivate_telemetry,
+    bind_profile, get_debug, report_issue)
 
 
 def number(text):
@@ -166,9 +169,11 @@ def recover_tax_below_grid(image, rect, columns, row_id):
 def process(data, publish=None, job_id=None, *, rectify=False):
     tracker=RecTracker()
     token=activate(tracker)
+    telemetry_token=activate_telemetry(job_id)
     try:
         return _process_job(data,publish,job_id,rectify=rectify,rec_tracker=tracker)
     finally:
+        deactivate_telemetry(telemetry_token)
         deactivate(token)
 
 
@@ -182,6 +187,7 @@ def _process_job(data, publish=None, job_id=None, *, rectify=False, rec_tracker)
     job_dir = output_dir / job_id
     job_dir.mkdir(parents=True, exist_ok=False)
     profile = OCRPerformance(publish)
+    bind_profile(profile, job_id)
     profile.processing_log = []
     try:
         profile.phase('Сохранение исходного изображения')
@@ -191,7 +197,12 @@ def _process_job(data, publish=None, job_id=None, *, rectify=False, rec_tracker)
         for key in ('original', 'rectified'):
             (job_dir/f'{key}.png').write_bytes(base64.b64decode(result[key].split(',', 1)[1]))
     except Exception as exc:
+        report_issue(source='pipeline',operation=profile.name or 'unknown',
+                     kind='uncaught_exception',error=exc,fallback='none')
         failure_profile = profile.finish()
+        debug_perf=get_debug()
+        if debug_perf is not None:
+            failure_profile['debug']=debug_perf.finish(rec_tracker.export())
         profile.processing_log.append({'type':'error', 'stage':'Обработка',
                                        'message':f'Обработка завершилась ошибкой: {type(exc).__name__}: {exc}'})
         failure_profile['budget_events'] = [event for event in profile.processing_log if event['type'] == 'budget']
@@ -200,7 +211,14 @@ def _process_job(data, publish=None, job_id=None, *, rectify=False, rec_tracker)
         (job_dir/'error.json').write_text(json.dumps({'error':str(exc)}, ensure_ascii=False, indent=2), encoding='utf-8')
         raise
     result['rec_trace']=rec_tracker.export()
+    for item in result.get('processing_log',[]):
+        if item.get('type') == 'error':
+            report_issue(source='processing_log',operation=str(item.get('stage','pipeline')),
+                         kind='caught_pipeline_error',context={'message':str(item.get('message',''))[:250]})
     performance = profile.finish()
+    debug_perf=get_debug()
+    if debug_perf is not None:
+        performance['debug']=debug_perf.finish(result['rec_trace'])
     result['performance'] = performance
     result['job_id'] = job_id
     result['job_directory'] = str(job_dir.relative_to(ROOT)).replace('\\', '/')
@@ -236,6 +254,9 @@ def _process(data, profile, job_dir, rectify):
         rgb = ImageOps.exif_transpose(photo).convert('RGB')
     image = cv2.cvtColor(np.array(rgb), cv2.COLOR_RGB2BGR)
     cv2.setNumThreads(positive_int('OCR_OPENCV_THREADS', 2))
+    debug_perf=get_debug()
+    if debug_perf is not None:
+        debug_perf.capture_runtime(image.shape)
     profile.phase('Поиск физической сетки')
     # Portrait photos are the supported automatic orientation. Landscape is
     # tested in both directions using the same physical-grid detector.
@@ -329,12 +350,13 @@ def _process(data, profile, job_dir, rectify):
     field_order = ('name','quantity','price') + (('printed_total',) if 'printed_total' in columns else ())
     for idx in range(1, body_row_count+1):
         for field in field_order:
+            _crop_t0=time.perf_counter() if debug_perf is not None else None
             crop, offset, source_bbox = cell_crop(rect, idx, columns[field])
+            if debug_perf is not None:
+                debug_perf.add_crop(field,(time.perf_counter()-_crop_t0)*1000,crop.shape)
             cell_requests.append(BatchCell(crop, idx, field, offset, source_bbox))
             if field in ('quantity','price','printed_total'):
                 crop_map[(idx,field)] = crop
-                if e4_enabled:
-                    original_numeric_cache.store(idx, field, columns[field])
     parallel_footer = None
     if ocr_mode == 'cell':
         profile.phase('Поячеечный OCR: итог и столбцы таблицы параллельно')
@@ -348,6 +370,8 @@ def _process(data, profile, job_dir, rectify):
         batch_stats['table_wall_ms'] = round((time.perf_counter()-table_started)*1000,3)
     geometry['ocr_mode'] = ocr_mode
     geometry['ocr_batch'] = batch_stats
+    if ocr_mode == 'batch' and debug_perf is not None:
+        debug_perf.add_lane('table',batch_stats.get('table_wall_ms'),status='batch')
     log_budget_events(processing_log, batch_stats, 'Первичная подготовка')
     if batch_stats.get('cell_fallback'):
         geometry['warnings'].append('Поячеечный OCR использовал резервный пакетный режим для части ячеек.')
@@ -391,7 +415,8 @@ def _process(data, profile, job_dir, rectify):
     primary_numeric_observations = {
         CandidateBook.key(row['row_id'], field): {
             'text': row['cells'][field]['text'],
-            'confidence': row['cells'][field].get('confidence')}
+            'confidence': row['cells'][field].get('confidence'),
+            'model_id':row['cells'][field].get('model_id','v5_cyrillic_mobile')}
         for row in rows for field in ('quantity','price','printed_total')
         if field in row['cells']
     }
@@ -416,9 +441,6 @@ def _process(data, profile, job_dir, rectify):
                                                tuple(cell['bbox'][:2]), cell['source_bbox']))
                 crop_map[(row['row_id'],field)] = crop
                 # VAT outside the mesh is already an original-pixel extraction.
-                if e4_enabled:
-                    original_numeric_cache.crops[(row['row_id'],field)] = crop.copy()
-                    original_numeric_cache.bytes += crop.nbytes
             processing_log.append({'type':'operation', 'stage':'Проверка НДС',
                                    'message':'Строка НДС найдена под границей сетки.'})
             geometry['footer_marker'] = footer_marker
@@ -510,7 +532,7 @@ def _process(data, profile, job_dir, rectify):
     # E1: finish the normal OCR pipeline first.  Do not mutate its numbers;
     # independent source-pixel observations form alternatives for a bounded
     # candidate matrix, not automatic replacements.
-    if e4_enabled:profile.phase('OCR E1: оригинальные пиксели и матрица чисел')
+    if e4_enabled:profile.phase('Сверка матрицы чисел')
     numeric_book_export = {'cells': {}, 'footer': []}
     numeric_matrix = {'status':'not_run' if e4_enabled else 'disabled', 'review_required':e4_enabled}
     original_roi_experiment = {}
@@ -523,45 +545,90 @@ def _process(data, profile, job_dir, rectify):
             audit_sum = sum((Decimal(r['line_total']) for r in rows if r['line_total'] is not None), Decimal(0))
             book = CandidateBook.from_receipt(rows, primary_numeric_observations,
                                              geometry['ocr_recovery'], total, footer_attempts)
-            model_pool = ExperimentModelPool()
-            footer_variant_attempts = scan_footer(
-                image, y_bottom, total, audit_sum,
-                read_line=read_line, read_full=read_full,
-                always_check=setting('OCR_FOOTER_VERIFY_ALWAYS', '1') == '1',
-                max_probes=positive_int('OCR_FOOTER_MAX_PROBES',8),
-                model_pool=model_pool)
-            for alternative in footer_variant_attempts:
-                if alternative.get('total') is not None:
-                    book.add_footer(alternative['total'], alternative.get('confidence'),
-                                    alternative['strategy'],
-                                    model=alternative.get('model_id') or alternative.get('model','PP-OCRv5 Cyrillic Mobile / RapidOCR 3.x'))
-            # E3: photograph-based OCR of VAT, with its own independent observations.
-            # Never infer 'printed VAT' solely by applying the tax percentage.
-            vat_evidence = scan_printed_vat(
-                rows, original_numeric_cache, book, vat_rate, read_line=read_line,
-                model_pool=model_pool,
-                always_check=setting('OCR_VAT_VERIFY_ALWAYS','1') == '1',
-                max_probes=positive_int('OCR_VAT_MAX_PROBES',6))
+            # Every numeric cell gets an independent V5 observation before
+            # the first solve. The matrix sees disagreements even if the
+            # primary OCR values happen to add up to the printed total.
+            candidate_failures = []
+            candidate_calls = 0
+            for row in rows:
+                for field in ('quantity','price','printed_total'):
+                    key=(row['row_id'],field)
+                    if key not in crop_map:continue
+                    try:
+                        with rec_scope([key], 'v5_numeric_candidate'):
+                            prepared,_ = crop_numeric_ink(crop_map[key])
+                            alternative=read_line(prepared)
+                        candidate_calls += 1
+                        if alternative:
+                            book.add(row['row_id'],field,alternative['text'],alternative['confidence'],
+                                     'v5_numeric_candidate',model='v5_cyrillic_mobile')
+                    except Exception as exc:
+                        candidate_failures.append({'row_id':key[0], 'field':field,
+                                                   'error':f'{type(exc).__name__}: {exc}'})
+            if candidate_failures:
+                geometry['warnings'].append('Не удалось собрать все резервные OCR-варианты чисел; проверьте результат.')
+            seed = seed_printed_vat(rows, book)
+            vat_evidence = {'source':seed['source'], 'source_status':seed['status'],
+                            'observations':[], 'probes':0, 'errors':[]}
             if book.vat:
                 printed_vat_observed=book.vat[0]['text']
-            original_roi_experiment = original_numeric_cache.run_suspects(
-                rows, book, printed_total=total,
-                max_calls=positive_int('OCR_ORIGINAL_MAX_RECOGNITIONS',8),
-                read_line=read_line, model_pool=model_pool)
             numeric_matrix = solve_matrix(rows, book, vat_rate,
                 max_nodes=positive_int('OCR_MATRIX_MAX_NODES',100000))
-            if ((numeric_matrix['status'] != 'unique_math_match' or
-                 numeric_matrix.get('review_required') or numeric_matrix.get('recommended_changes')) and
-                    setting('OCR_E4_SECOND_PASS','1') == '1'):
-                target_keys={(v['row_id'],v['field']) for v in numeric_matrix.get('recommended_changes',[])}
-                second_pass = original_numeric_cache.escalate_suspects(
-                    book, original_roi_experiment, model_pool,
-                    max_calls=positive_int('OCR_E4_SECOND_PASS_MAX',3),
-                    only_keys=target_keys if numeric_matrix['status']=='unique_math_match' and target_keys else None)
-                original_roi_experiment['second_pass'] = second_pass
-                if second_pass['recognitions']:
-                    numeric_matrix = solve_matrix(rows, book, vat_rate,
-                        max_nodes=positive_int('OCR_MATRIX_MAX_NODES',100000))
+            initial_matrix_status = numeric_matrix['status']
+            original_roi_experiment = {'cache_cells':0,'cache_bytes':0,'rec_calls':0,
+                                       'skipped':'matrix_resolved'}
+            model_pool = ExperimentModelPool()
+            if numeric_matrix['status'] not in ('unique_math_match','ambiguous') or numeric_matrix.get('search_truncated'):
+                profile.phase('Резервная проверка оригинальных пикселей')
+                for row in rows:
+                    for field in ('quantity','price','printed_total'):
+                        key=(row['row_id'],field)
+                        if key not in crop_map:continue
+                        if row['row_id'] <= body_row_count:
+                            original_numeric_cache.store(row['row_id'],field,columns[field])
+                        else:
+                            crop=crop_map[key]
+                            if original_numeric_cache.bytes+crop.nbytes<=original_numeric_cache.max_bytes:
+                                original_numeric_cache.crops[key]=crop.copy()
+                                original_numeric_cache.bytes+=crop.nbytes
+                footer_variant_attempts = scan_footer(
+                    image, y_bottom, total, audit_sum,
+                    read_line=read_line, read_full=read_full,
+                    always_check=setting('OCR_FOOTER_VERIFY_ALWAYS', '1') == '1',
+                    max_probes=positive_int('OCR_FOOTER_MAX_PROBES',8),
+                    model_pool=model_pool)
+                for alternative in footer_variant_attempts:
+                    if alternative.get('total') is not None:
+                        book.add_footer(alternative['total'], alternative.get('confidence'),
+                                        alternative['strategy'],
+                                        model=alternative.get('model_id') or alternative.get('model','PP-OCRv5 Cyrillic Mobile / RapidOCR 3.x'))
+                # E3: photograph-based OCR of VAT, with its own independent observations.
+                # Never infer 'printed VAT' solely by applying the tax percentage.
+                vat_evidence = scan_printed_vat(
+                    rows, original_numeric_cache, book, vat_rate, read_line=read_line,
+                    model_pool=model_pool,
+                    always_check=setting('OCR_VAT_VERIFY_ALWAYS','1') == '1',
+                    max_probes=positive_int('OCR_VAT_MAX_PROBES',6))
+                if book.vat:
+                    printed_vat_observed=book.vat[0]['text']
+                original_roi_experiment = original_numeric_cache.run_suspects(
+                    rows, book, printed_total=total,
+                    max_calls=positive_int('OCR_ORIGINAL_MAX_RECOGNITIONS',8),
+                    read_line=read_line, model_pool=model_pool)
+                numeric_matrix = solve_matrix(rows, book, vat_rate,
+                    max_nodes=positive_int('OCR_MATRIX_MAX_NODES',100000))
+                if ((numeric_matrix['status'] != 'unique_math_match' or
+                     numeric_matrix.get('review_required') or numeric_matrix.get('recommended_changes')) and
+                        setting('OCR_E4_SECOND_PASS','1') == '1'):
+                    target_keys={(v['row_id'],v['field']) for v in numeric_matrix.get('recommended_changes',[])}
+                    second_pass = original_numeric_cache.escalate_suspects(
+                        book, original_roi_experiment, model_pool,
+                        max_calls=positive_int('OCR_E4_SECOND_PASS_MAX',3),
+                        only_keys=target_keys if numeric_matrix['status']=='unique_math_match' and target_keys else None)
+                    original_roi_experiment['second_pass'] = second_pass
+                    if second_pass['recognitions']:
+                        numeric_matrix = solve_matrix(rows, book, vat_rate,
+                            max_nodes=positive_int('OCR_MATRIX_MAX_NODES',100000))
             numeric_auto_corrections = auto_apply_consensus(
                 rows,book,numeric_matrix,total,
                 enabled=setting('OCR_E4_AUTO_APPLY','1') == '1')
@@ -573,6 +640,9 @@ def _process(data, profile, job_dir, rectify):
                 processing_log.append({'type':'operation','stage':'E4 автоматическая сверка',
                     'message':'Выбрана единственная арифметически согласованная комбинация: '
                               + str(len(numeric_auto_corrections['changes'])) + ' исправлений.'})
+            numeric_matrix['candidate_collection'] = {'v5_calls':candidate_calls, 'errors':candidate_failures}
+            numeric_matrix['initial_status'] = initial_matrix_status
+            numeric_matrix['fallback_used'] = original_roi_experiment.get('skipped') != 'matrix_resolved'
             numeric_matrix['auto_applied'] = numeric_auto_corrections
             numeric_matrix['user_action_required'] = numeric_matrix['status']=='ambiguous'
             numeric_matrix['automatic_resolution'] = (
@@ -607,7 +677,7 @@ def _process(data, profile, job_dir, rectify):
             if numeric_matrix['recommended_changes']:
                 geometry['warnings'].append('Матрица сохранила альтернативные цифры; исходные OCR-значения оставлены без автоматической подмены.')
             processing_log.append({'type':'operation', 'stage':'Эксперимент E1',
-                'message':f"E1: исходных ROI {original_roi_experiment['cache_cells']}, "
+                'message':f"Матрица: исходных ROI {original_roi_experiment['cache_cells']}, "
                           f"повторов {original_roi_experiment['rec_calls']}, "
                           f"вариантов итога {len(numeric_matrix['footer_variants'])}, "
                           f"вариантов НДС {len(numeric_matrix['vat_variants'])}, "

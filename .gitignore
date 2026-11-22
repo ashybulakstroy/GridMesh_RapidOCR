@@ -15,3 +15,5 @@ benchmark/data/output/*
 benchmark/reports/*
 !benchmark/reports/.gitkeep
 data/experiment_reports/
+
+data/experiments/gridmesh_debug_performance_v2/

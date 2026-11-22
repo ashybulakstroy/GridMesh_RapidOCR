@@ -73,7 +73,10 @@ def test_v4_enabled_replaces_legacy_retries_and_writes_trace(monkeypatch):
     assert result['numeric_matrix']['status']!='experiment_error'
     assert result['geometry']['ocr_recovery']['initial']['delegated']=='e4_independent_original_roi'
     assert result['rec_trace']['rec_only_model_invocations']>0
-    assert result['geometry']['numeric_experiment']['model_ensemble']['successful']>0
+    assert result['numeric_matrix']['initial_status']=='unique_math_match'
+    assert result['numeric_matrix']['fallback_used'] is False
+    assert result['original_roi_experiment']['rec_calls']==0
+    assert result['geometry']['numeric_experiment']['model_ensemble']['model_calls']==0
     assert (Path(__file__).resolve().parents[2]/result['numeric_experiment_file']).exists()
 
 
@@ -122,3 +125,23 @@ def test_ambiguous_matrix_ranks_all_solutions_and_warns():
     assert rows[0]['cells']['price']['text']=='300'
     bounded=solve_matrix(rows,book,16,max_nodes=1)
     assert auto_apply_consensus(rows,book,bounded,'300')['status']=='unresolved_preserved'
+
+
+def test_original_roi_fallback_runs_when_primary_candidate_matrix_has_no_solution(monkeypatch):
+    from pathlib import Path
+    import App.pipeline as pipeline
+    monkeypatch.setenv('OCR_E4_ENABLE','1')
+    original=pipeline.solve_matrix
+    calls=[]
+    def no_solution_first(*args,**kwargs):
+        value=original(*args,**kwargs)
+        calls.append(value['status'])
+        if len(calls)==1:
+            value.update(status='no_solution',solutions=[],review_required=True)
+        return value
+    monkeypatch.setattr(pipeline,'solve_matrix',no_solution_first)
+    result=pipeline.process((Path(__file__).parent/'receipt_5730.png').read_bytes())
+    assert result['numeric_matrix']['initial_status']=='no_solution'
+    assert result['numeric_matrix']['fallback_used'] is True
+    assert result['original_roi_experiment']['cache_cells']>0
+    assert result['math_match']
