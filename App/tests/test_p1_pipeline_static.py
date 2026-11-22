@@ -7,11 +7,17 @@ HERE=Path(__file__).resolve().parent
 
 
 @pytest.mark.parametrize('photo', ['receipt_5730.png','receipt_575866.png','receipt_597275.png'])
-def test_p1_provides_batch_metrics_and_source_positions(photo):
+@pytest.mark.parametrize('mode', ['cell','batch'])
+def test_p1_provides_recognition_metrics_and_source_positions(photo, mode, monkeypatch):
+    monkeypatch.setenv('OCR_TABLE_MODE', mode)
     result=process((HERE/photo).read_bytes())
     batch=result['geometry']['ocr_batch']
     assert batch['requested']>=9
-    assert batch['batch_calls']>=1
+    if mode=='cell':
+        assert batch['cell_calls']>=1
+        assert batch['parallel_lanes']==2
+    else:
+        assert batch['batch_calls']>=1
     assert result['geometry']['ocr_recovery']['initial']['attempted']>=0
     assert all('source_bbox' in r['cells']['name'] for r in result['rows'])
     assert all(r['cells']['number']['derived'] for r in result['rows'])

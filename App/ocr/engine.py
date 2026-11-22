@@ -1,5 +1,7 @@
 """RapidOCR 3.x adapter. Models are initialized once and shared by all cells."""
 import threading
+from contextvars import ContextVar
+from contextlib import contextmanager
 from time import perf_counter
 from .experiment_rec_trace import record_rec
 import numpy as np
@@ -9,18 +11,37 @@ from rapidocr import RapidOCR
 from rapidocr.utils.typings import LangRec, OCRVersion, ModelType
 from ..config import positive_int
 
-_engine = None
-_english_engine = None
-_footer_engine = None
-_lock = threading.RLock()
+_LANE = ContextVar('ocr_engine_lane', default='table')
+_models = {}
+_locks = {'table': threading.RLock(), 'footer': threading.RLock()}
+
+
+class _LaneLock:
+    def __enter__(self):
+        return _locks[_LANE.get()].__enter__()
+    def __exit__(self, *args):
+        return _locks[_LANE.get()].__exit__(*args)
+
+
+_lock = _LaneLock()
+
+
+@contextmanager
+def inference_lane(lane):
+    """Separate cached sessions and locks; never share mutable RapidOCR workers."""
+    token = _LANE.set(lane)
+    try:
+        yield
+    finally:
+        _LANE.reset(token)
 
 
 def engine():
-    global _engine
-    if _engine is None:
+    key = (_LANE.get(), 'primary')
+    if key not in _models:
         with _lock:
-            if _engine is None:
-                _engine = RapidOCR(params={
+            if key not in _models:
+                _models[key] = RapidOCR(params={
                     'Rec.lang_type': LangRec.CYRILLIC,
                     'Rec.ocr_version': OCRVersion.PPOCRV5,
                     'Rec.model_type': ModelType.MOBILE,
@@ -32,16 +53,16 @@ def engine():
                     'EngineConfig.onnxruntime.intra_op_num_threads': positive_int('OCR_ONNX_THREADS', 2),
                     'EngineConfig.onnxruntime.inter_op_num_threads': 1,
                 })
-    return _engine
+    return _models[key]
 
 
 def footer_engine():
     """Detector profile for short, wide receipt footer regions."""
-    global _footer_engine
-    if _footer_engine is None:
+    key = (_LANE.get(), 'detector')
+    if key not in _models:
         with _lock:
-            if _footer_engine is None:
-                _footer_engine = RapidOCR(params={
+            if key not in _models:
+                _models[key] = RapidOCR(params={
                     'Rec.lang_type': LangRec.CYRILLIC,
                     'Rec.ocr_version': OCRVersion.PPOCRV5,
                     'Rec.model_type': ModelType.MOBILE,
@@ -55,7 +76,7 @@ def footer_engine():
                     'EngineConfig.onnxruntime.intra_op_num_threads': positive_int('OCR_ONNX_THREADS', 2),
                     'EngineConfig.onnxruntime.inter_op_num_threads': 1,
                 })
-    return _footer_engine
+    return _models[key]
 
 
 def _run_cyrillic_rec(image):
@@ -121,18 +142,18 @@ def read_full(image, *, footer_mode=False, cell_mode=False):
 
 
 def english_engine():
-    global _english_engine
-    if _english_engine is None:
+    key = (_LANE.get(), 'english')
+    if key not in _models:
         with _lock:
-            if _english_engine is None:
-                _english_engine = RapidOCR(params={
+            if key not in _models:
+                _models[key] = RapidOCR(params={
                     'Rec.lang_type': LangRec.EN, 'Rec.ocr_version': OCRVersion.PPOCRV5,
                     'Rec.model_type': ModelType.MOBILE, 'Global.use_det': False,
                     'Global.use_cls': False,
                     'EngineConfig.onnxruntime.intra_op_num_threads': positive_int('OCR_ONNX_THREADS', 2),
                     'EngineConfig.onnxruntime.inter_op_num_threads': 1,
                 })
-    return _english_engine
+    return _models[key]
 
 
 def read_line(image):
