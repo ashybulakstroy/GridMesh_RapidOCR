@@ -117,3 +117,44 @@ def test_all_roi_prepared_despite_budget_overrun(monkeypatch):
     assert len(result)==3 and stats['numeric_roi_skipped']==0
     assert stats['numeric_roi_unlimited']
     assert not stats['numeric_roi_crop_exceeded']
+
+
+def test_candidates_run_after_footer_while_table_is_active():
+    from App.pipeline import collect_v5_candidates
+    import App.pipeline as pipeline
+    from unittest.mock import patch
+    table_ready=Event();candidates_done=Event();order=[]
+    cells={(1,'price'):np.zeros((20,40,3),dtype='uint8')}
+    def footer():
+        order.append('footer')
+        assert table_ready.wait(2)
+        result=collect_v5_candidates(cells)
+        candidates_done.set()
+        return {'numeric_candidates':result}
+    def table(cells,**kwargs):
+        table_ready.set()
+        assert candidates_done.wait(2)
+        return {},{}
+    def read(image):
+        order.append('candidate')
+        assert _LANE.get()=='footer'
+        return {'text':'2480T','confidence':.9}
+    with patch.object(pipeline,'read_line',read), patch.object(pipeline,'crop_numeric_ink',lambda x:(x,{})):
+        _,_,result=cell_mode.read_parallel([],footer,table)
+    assert order==['footer','candidate']
+    assert result['numeric_candidates']['observations'][0]['text']=='2480T'
+
+
+def test_candidate_errors_are_preserved_and_other_cells_continue(monkeypatch):
+    import App.pipeline as pipeline
+    monkeypatch.setattr(pipeline,'crop_numeric_ink',lambda im:(im,{}))
+    counter=[]
+    def reader(image):
+        counter.append(1)
+        if len(counter)==1:raise RuntimeError('bad crop')
+        return {'text':'60','confidence':.8}
+    monkeypatch.setattr(pipeline,'read_line',reader)
+    image=np.zeros((20,40,3),dtype='uint8')
+    data=pipeline.collect_v5_candidates({(1,'price'):image,(2,'price'):image})
+    assert len(data['attempted'])==2 and len(data['errors'])==1
+    assert data['observations'][0]['text']=='60'

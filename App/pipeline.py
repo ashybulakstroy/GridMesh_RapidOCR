@@ -360,8 +360,17 @@ def _process(data, profile, job_dir, rectify):
     parallel_footer = None
     if ocr_mode == 'cell':
         profile.phase('Поячеечный OCR: итог и столбцы таблицы параллельно')
+        def read_footer_and_candidates():
+            footer_start = time.perf_counter()
+            footer_result = read_printed_footer(image, table_source_bottom(rect,xs,ys))
+            footer_result['footer_read_ms'] = round((time.perf_counter()-footer_start)*1000,3)
+            if e4_enabled:
+                candidate_start = time.perf_counter()
+                footer_result['numeric_candidates'] = collect_v5_candidates(crop_map)
+                footer_result['candidate_read_ms'] = round((time.perf_counter()-candidate_start)*1000,3)
+            return footer_result
         readouts, batch_stats, parallel_footer = read_parallel(
-            cell_requests, lambda: read_printed_footer(image, table_source_bottom(rect,xs,ys)),
+            cell_requests, read_footer_and_candidates,
             read_cells, batch_size=positive_int('OCR_REC_BATCH_NUM',8))
     else:
         profile.phase('OCR P1: пакетный RapidOCR')
@@ -545,26 +554,22 @@ def _process(data, profile, job_dir, rectify):
             audit_sum = sum((Decimal(r['line_total']) for r in rows if r['line_total'] is not None), Decimal(0))
             book = CandidateBook.from_receipt(rows, primary_numeric_observations,
                                              geometry['ocr_recovery'], total, footer_attempts)
-            # Every numeric cell gets an independent V5 observation before
-            # the first solve. The matrix sees disagreements even if the
-            # primary OCR values happen to add up to the printed total.
-            candidate_failures = []
-            candidate_calls = 0
-            for row in rows:
-                for field in ('quantity','price','printed_total'):
-                    key=(row['row_id'],field)
-                    if key not in crop_map:continue
-                    try:
-                        with rec_scope([key], 'v5_numeric_candidate'):
-                            prepared,_ = crop_numeric_ink(crop_map[key])
-                            alternative=read_line(prepared)
-                        candidate_calls += 1
-                        if alternative:
-                            book.add(row['row_id'],field,alternative['text'],alternative['confidence'],
-                                     'v5_numeric_candidate',model='v5_cyrillic_mobile')
-                    except Exception as exc:
-                        candidate_failures.append({'row_id':key[0], 'field':field,
-                                                   'error':f'{type(exc).__name__}: {exc}'})
+            collected = (parallel_footer or {}).get('numeric_candidates')
+            if collected is None:
+                collected = collect_v5_candidates(crop_map)
+            # Tax rows recovered below the grid are not known to the parallel lane.
+            missing = {key:crop for key,crop in crop_map.items()
+                       if key not in collected['attempted']}
+            if missing:
+                extra = collect_v5_candidates(missing)
+                collected['observations'].extend(extra['observations'])
+                collected['errors'].extend(extra['errors'])
+                collected['attempted'].update(extra['attempted'])
+            candidate_calls = len(collected['attempted'])
+            candidate_failures = collected['errors']
+            for candidate in collected['observations']:
+                book.add(candidate['row_id'],candidate['field'],candidate['text'],
+                         candidate['confidence'],'v5_numeric_candidate',model='v5_cyrillic_mobile')
             if candidate_failures:
                 geometry['warnings'].append('Не удалось собрать все резервные OCR-варианты чисел; проверьте результат.')
             seed = seed_printed_vat(rows, book)
@@ -864,3 +869,23 @@ def table_source_bottom(rect, xs, ys):
         return int(max(np.max(cell_polygon(rect, len(ys)-2, k)[34:51, 1])
                        for k in range(len(xs)-1)) + rect.info['source_offset'][1])
     return int(np.max(rect.map_y[last_y, max(0,xs[0]):min(rect.map_y.shape[1],xs[-1])]))
+
+
+def collect_v5_candidates(crops):
+    """Independent numeric observations; called only after footer recognition."""
+    out={'observations':[], 'errors':[], 'attempted':set()}
+    for (row_id,field),crop in crops.items():
+        if field not in ('quantity','price','printed_total'):continue
+        out['attempted'].add((row_id,field))
+        try:
+            with rec_scope([(row_id,field)], 'v5_numeric_candidate'):
+                prepared,_ = crop_numeric_ink(crop)
+                alternative=read_line(prepared)
+            if alternative:
+                out['observations'].append({'row_id':row_id,'field':field,
+                                            'text':alternative['text'],
+                                            'confidence':alternative['confidence']})
+        except Exception as exc:
+            out['errors'].append({'row_id':row_id,'field':field,
+                                  'error':f'{type(exc).__name__}: {exc}'})
+    return out

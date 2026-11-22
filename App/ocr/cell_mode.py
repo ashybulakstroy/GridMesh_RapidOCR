@@ -38,7 +38,10 @@ def read_parallel(cells, footer_reader, cell_reader, *, batch_size=8):
                          cell_error=f'{type(exc).__name__}: {exc}')
         try:
             footer_result = footer_future.result()
-            stats['footer_wall_ms'] = footer_result['wall_ms']
+            stats['footer_lane_wall_ms'] = footer_result['wall_ms']
+            stats['footer_wall_ms'] = footer_result.get('footer_read_ms',footer_result['wall_ms'])
+            if 'candidate_read_ms' in footer_result:
+                stats['v5_candidate_wall_ms'] = footer_result['candidate_read_ms']
         except Exception as exc:
             report_issue(source='parallel_ocr',operation='footer_lane',
                          kind='lane_exception',error=exc,
