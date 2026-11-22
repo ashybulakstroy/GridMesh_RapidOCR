@@ -78,6 +78,17 @@ def get_preview(job_id: str):
         raise HTTPException(404, 'Сетка ещё не готова')
     return FileResponse(directory/'rectified.png', media_type='image/png')
 
+@app.get('/api/jobs/{job_id}/early')
+def download_early_result(job_id: str):
+    with jobs_lock:
+        if job_id not in jobs:
+            raise HTTPException(404, 'Задание не найдено')
+    directory = (ROOT / setting('OUTPUT_DIR', 'data/output') / job_id).resolve()
+    path = directory/'e4_early_result.json'
+    if not directory.is_relative_to(ROOT) or not path.is_file():
+        raise HTTPException(404, 'Предварительный результат ещё не готов')
+    return FileResponse(path, media_type='application/json',filename='e4_early_result.json')
+
 @app.put('/api/jobs/{job_id}/receipt')
 def save_edited_receipt(job_id: str, receipt: dict):
     with jobs_lock:

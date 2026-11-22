@@ -15,6 +15,7 @@ from .geometry.service import build_grid, cell_crop, cell_polygon
 from .ocr.engine import read_cell, read_full, read_line
 from .ocr.p1_batch import BatchCell, read_batches, read_cells
 from .ocr.cell_mode import read_parallel
+from .ocr.e4_adaptive_early import adaptive_collect, make_early_snapshot, compare_early_final
 from .ocr.p1_numbers import parse_number
 from .ocr.numeric_roi import crop_numeric_ink
 from .ocr.price_candidate import prepare_price_candidate
@@ -198,6 +199,8 @@ def _process_job(data, publish=None, job_id=None, *, rectify=False, rec_tracker)
         for key in ('original', 'rectified'):
             (job_dir/f'{key}.png').write_bytes(base64.b64decode(result[key].split(',', 1)[1]))
     except Exception as exc:
+        if (job_dir/'e4_early_result.json').is_file():
+            profile.publish({'e4_background_verification':'failed'})
         report_issue(source='pipeline',operation=profile.name or 'unknown',
                      kind='uncaught_exception',error=exc,fallback='none')
         failure_profile = profile.finish()
@@ -226,6 +229,18 @@ def _process_job(data, publish=None, job_id=None, *, rectify=False, rec_tracker)
     result['performance_file'] = f"{result['job_directory']}/performance_profile.json"
     result['processing_log_file'] = f"{result['job_directory']}/processing_log.json"
     result['timings']['total_s'] = round(performance['wall_ms']/1000, 3)
+    if result.get('e4_adaptive', {}).get('enabled'):
+        performance['e4_adaptive'] = result['e4_adaptive']
+        early_path = job_dir/'e4_early_result.json'
+        if early_path.is_file():
+            comparison = compare_early_final(json.loads(early_path.read_text(encoding='utf-8')), result)
+            comparison['snapshot_created_ms'] = comparison['first_elapsed_ms']
+            comparison['first_elapsed_ms'] = result['e4_adaptive']['first_elapsed_ms']
+            result['e4_early_comparison'] = comparison
+            (job_dir/'e4_early_comparison.json').write_text(
+                json.dumps(comparison, ensure_ascii=False, indent=2), encoding='utf-8')
+            profile.publish({'e4_background_verification':'done',
+                             'e4_verification_change_count':comparison['changed_count']})
     performance['budget_events'] = [event for event in result['processing_log'] if event['type'] == 'budget']
     (job_dir/'performance_profile.json').write_text(json.dumps(performance, ensure_ascii=False, indent=2), encoding='utf-8')
     (job_dir/'processing_log.json').write_text(json.dumps(result['processing_log'], ensure_ascii=False, indent=2), encoding='utf-8')
@@ -248,6 +263,11 @@ def _process_job(data, publish=None, job_id=None, *, rectify=False, rec_tracker)
 def _process(data, profile, job_dir, rectify):
     started = time.perf_counter()
     e4_enabled = setting('OCR_E4_ENABLE','0') == '1'
+    adaptive_enabled = e4_enabled and setting('OCR_E4_ADAPTIVE','1') == '1'
+    adaptive_info = {'enabled':adaptive_enabled, 'first_ready':False,
+                     'first_elapsed_ms':None, 'probes_before_first':None, 'early_solver_checks':0}
+    if adaptive_enabled:
+        profile.publish({'e4_adaptive_enabled':True})
     processing_log = profile.processing_log
     profile.phase('Подготовка и ориентация изображения')
     with Image.open(BytesIO(data)) as photo:
@@ -367,7 +387,7 @@ def _process(data, profile, job_dir, rectify):
             footer_start = time.perf_counter()
             footer_result = read_printed_footer(image, table_source_bottom(rect,xs,ys))
             footer_result['footer_read_ms'] = round((time.perf_counter()-footer_start)*1000,3)
-            if e4_enabled:
+            if e4_enabled and not adaptive_enabled:
                 candidate_start = time.perf_counter()
                 footer_result['numeric_candidates'] = collect_v5_candidates(crop_map)
                 footer_result['candidate_read_ms'] = round((time.perf_counter()-candidate_start)*1000,3)
@@ -557,7 +577,48 @@ def _process(data, profile, job_dir, rectify):
             audit_sum = sum((Decimal(r['line_total']) for r in rows if r['line_total'] is not None), Decimal(0))
             book = CandidateBook.from_receipt(rows, primary_numeric_observations,
                                              geometry['ocr_recovery'], total, footer_attempts)
-            collected = (parallel_footer or {}).get('numeric_candidates')
+            collected = None
+            if adaptive_enabled:
+                profile.phase('E4: поиск первого предварительного результата')
+                def publish_first_matrix(matrix, candidate_book, scans):
+                    # This is a read-only, immutable snapshot, separate from receipt.json.
+                    elapsed = (time.perf_counter()-profile.start_wall)*1000
+                    snapshot = make_early_snapshot(rows, candidate_book, matrix, total,
+                                                  vat_rate, elapsed, scans, job_dir.name)
+                    temp = job_dir/'e4_early_result.json.tmp'
+                    temp.write_text(json.dumps(snapshot,ensure_ascii=False,indent=2),encoding='utf-8')
+                    temp.replace(job_dir/'e4_early_result.json')
+                    adaptive_info.update(first_ready=True, first_elapsed_ms=round(
+                        (time.perf_counter()-profile.start_wall)*1000,2), probes_before_first=scans)
+                    profile.publish({'e4_early_ready':True, 'e4_first_result':snapshot,
+                                     'e4_background_verification':'running'})
+                    processing_log.append({'type':'operation','stage':'E4 предварительный результат',
+                        'message':f'Первый согласованный снимок сохранён через {adaptive_info["first_elapsed_ms"]:.0f} мс; полная проверка продолжается.'})
+                try:
+                    early_scan = adaptive_collect(rows, book, crop_map, vat_rate,
+                        collect_v5_candidates, publish_first_matrix,
+                        max_nodes=positive_int('OCR_E4_ADAPTIVE_MAX_NODES',2500))
+                    collected = early_scan['collected']
+                    adaptive_info.update(probes_used=early_scan['probes_used'],
+                        early_solver_checks=early_scan['matrix_checks'],
+                        first_matrix_status=early_scan['last_matrix_status'],
+                        adaptive_collect_ms=early_scan['elapsed_ms'])
+                except Exception as exc:
+                    adaptive_info['error'] = f'{type(exc).__name__}: {exc}'
+                    report_issue(source='E4_adaptive',operation='early_collect',
+                                 kind='early_exception',error=exc,fallback='full_e4')
+                # Early ranking/VAT evidence must not reorder or restrict the
+                # normal final audit. Rebuild it with the baseline provenance.
+                book = CandidateBook.from_receipt(rows, primary_numeric_observations,
+                                                 geometry['ocr_recovery'], total, footer_attempts)
+                profile.phase('E4: полная проверка чисел')
+                # Build the FINAL book in the baseline insertion order. Early
+                # ranking must not change confidence ties or candidate caps.
+                book = CandidateBook.from_receipt(rows, primary_numeric_observations,
+                                                 geometry['ocr_recovery'], total, footer_attempts)
+                profile.phase('E4: полная проверка после предварительного результата')
+            else:
+                collected = (parallel_footer or {}).get('numeric_candidates')
             if collected is None:
                 collected = collect_v5_candidates(crop_map)
             # Tax rows recovered below the grid are not known to the parallel lane.
@@ -568,6 +629,12 @@ def _process(data, profile, job_dir, rectify):
                 collected['observations'].extend(extra['observations'])
                 collected['errors'].extend(extra['errors'])
                 collected['attempted'].update(extra['attempted'])
+            if adaptive_enabled:
+                # The complete collector was already used for each early cell;
+                # never rescan its price/currency variants in the full pass.
+                order = {key:i for i,key in enumerate(crop_map)}
+                collected['observations'].sort(key=lambda o:order[(o['row_id'],o['field'])])
+                adaptive_info['full_v5_cells'] = len(collected['attempted'])
             candidate_calls = len(collected['attempted'])
             candidate_failures = collected['errors']
             for candidate in collected['observations']:
@@ -748,6 +815,7 @@ def _process(data, profile, job_dir, rectify):
              'numeric_candidate_book': numeric_book_export,
              'ocr_user_action_required': False,
              'numeric_auto_corrections': numeric_auto_corrections,
+             'e4_adaptive': adaptive_info,
              'numeric_matrix': numeric_matrix,
              'original_roi_experiment': original_roi_experiment,
              'footer_variant_attempts': footer_variant_attempts,

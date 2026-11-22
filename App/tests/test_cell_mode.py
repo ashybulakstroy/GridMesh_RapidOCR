@@ -275,6 +275,7 @@ def test_table_thread_budget_does_not_change_footer_budget(monkeypatch,budget):
 def test_parallel_columns_divide_configured_thread_budget(monkeypatch,threads):
     from App.ocr.engine import onnx_threads
     monkeypatch.setenv('OCR_ONNX_THREADS',str(threads))
+    monkeypatch.setenv('OCR_TABLE_ONNX_THREADS',str(threads))
     assert onnx_threads()==threads
     with inference_lane('table_names'):
         names=onnx_threads()
