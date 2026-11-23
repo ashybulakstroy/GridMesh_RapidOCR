@@ -15,6 +15,9 @@ def validate():
     except ImportError:pass
 
 def main():
+    # Windows consoles may use a code page that cannot encode progress glyphs.
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(errors='backslashreplace')
     p=argparse.ArgumentParser(description='Benchmark2 — 6 Cyrillic OCR models, 17 real ROIs')
     p.add_argument('command',choices=['prepare','models','validate','run'])
     p.add_argument('--offline',action='store_true',help='Never download from network')

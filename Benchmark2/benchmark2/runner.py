@@ -12,7 +12,14 @@ from .report import build_report
 
 def write_json(path,data):
     p=Path(path);p.parent.mkdir(parents=True,exist_ok=True)
-    temp=p.with_name(p.name+'.tmp');temp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8');temp.replace(p)
+    temp=p.with_name(p.name+'.tmp');temp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
+    for attempt in range(20):
+        try:
+            temp.replace(p)
+            return
+        except PermissionError:
+            if attempt == 19:raise
+            time.sleep(.025)
 
 def pctstring(done,total):
     pct=int(done/max(1,total)*100)

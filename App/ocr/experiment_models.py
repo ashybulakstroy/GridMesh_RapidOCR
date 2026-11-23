@@ -153,7 +153,7 @@ class ExperimentModelPool:
                 model_start=perf_counter()
                 invoked=True
                 result=session.recognize_txt([image])
-            record_rec(model=model_id,ms=(perf_counter()-model_start)*1000,success=True)
+            record_rec(model=model_id,ms=(perf_counter()-model_start)*1000,success=True,image=image,result=result)
             reached=True
             if result.txts is None or not result.txts:
                 raise RuntimeError('REC-only returned no text')
@@ -165,7 +165,7 @@ class ExperimentModelPool:
         except Exception as exc:
             if invoked and not reached:
                 record_rec(model=model_id,ms=(perf_counter()-model_start)*1000,success=False,
-                           note=f'{type(exc).__name__}: {exc}')
+                           note=f'{type(exc).__name__}: {exc}',image=image)
             item={'model':model.get('name',model_id),'model_id':model_id,
                   'stage':stage,'error':f'{type(exc).__name__}: {exc}',
                   'wall_ms':round((perf_counter()-stamp)*1000,3)}

@@ -9,7 +9,7 @@ h1{font-size:27px;margin:0}h2{font-size:19px;margin:0 0 14px}p{margin:8px 0}.mut
 iframe{display:block;width:100%;height:65vh;border:1px solid #cdd8e6;border-radius:9px;background:white}
 </style></head><body><main>
 <h1>Benchmark2 <span class="muted">/ Кириллический OCR</span></h1><p class="muted">Intel CPU · 6 моделей · 17 ячеек из реальных чеков · 3 прохода с прогревом</p>
-<section class="panel"><p class="muted">Начало теста: <span id="started">—</span></p><div class="row"><h2 id="state">Подключение к запуску...</h2><strong id="percent" class="kpi">0%</strong></div>
+<section class="panel"><p class="muted">Начало теста: <span id="started">—</span></p><div class="row"><h2>Общий прогресс тестирования</h2><strong id="percent" class="kpi">0%</strong></div><p id="overall-count">Выполнено 0 из 306 попыток</p><p id="state">Подключение к запуску...</p>
 <div class="bar" role="progressbar"><div id="progress"></div></div><p><b id="model">—</b></p><p class="muted" id="detail">—</p>
 <div class="row"><span class="kpi" id="elapsed">—<small>Прошло</small></span><span class="kpi" id="eta">—<small>Осталось (оценка)</small></span>
 <span class="kpi" id="cpu">—<small>CPU всего</small></span><span class="kpi" id="processcpu">—<small>CPU процесса (100% = 1 ядро)</small></span>
@@ -26,6 +26,7 @@ const res=await fetch('/api/status?now='+Date.now(),{cache:'no-store'});if(!res.
 document.getElementById('state').textContent=({preparing:'Подготовка',loading:'Загрузка модели',running:'Выполняются тесты',finished:'Готово',error:'Ошибка'})[x.state]||x.state;
 document.getElementById('started').textContent=x.started||'—';
 document.getElementById('percent').textContent=x.percent.toFixed(1)+'%';document.getElementById('progress').style.width=x.percent+'%';
+document.getElementById('overall-count').textContent=`Выполнено ${x.completed} из ${x.total} попыток для всех моделей и проходов (включая прогрев)`;
 document.getElementById('model').textContent=x.model||'—';
 document.getElementById('detail').textContent=[x.message,x.cell,x.pass_number?'проход '+x.pass_number+' ('+x.pass_type+')':''].filter(Boolean).join(' · ');
 document.getElementById('elapsed').childNodes[0].nodeValue=duration(x.elapsed_sec);

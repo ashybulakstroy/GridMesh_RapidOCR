@@ -169,12 +169,12 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
                         response = engine().recognize_txt([c.image for c in chunk])
                     record_rec(keys=[f'{c.row_id}:{c.column_id}' for c in chunk],
                                stage='primary_rec_batch',model='v5_cyrillic_mobile',
-                               ms=(rec_counter()-started_rec)*1000)
+                               ms=(rec_counter()-started_rec)*1000,image=[c.image for c in chunk],result=response)
                 except Exception as error:
                     record_rec(keys=[f'{c.row_id}:{c.column_id}' for c in chunk],
                                stage='primary_rec_batch',model='v5_cyrillic_mobile',
                                ms=(rec_counter()-started_rec)*1000,
-                               success=False,note=str(error))
+                               success=False,note=str(error),image=[c.image for c in chunk])
                     raise
                 if response.txts is None or len(response.txts) != len(chunk):
                     raise RuntimeError('Batch returned incorrect number of results')

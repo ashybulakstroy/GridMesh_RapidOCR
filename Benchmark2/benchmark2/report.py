@@ -72,7 +72,7 @@ def build_report(dest,inputs,specs,model_init,rows,metadata,complete=True):
         for item in inputs:
             matched=sorted((r for r in own if r['cell_id']==item['id']),key=lambda r:r['pass'])
             if not matched:continue
-            texts='<div>'.join(f'#{r["pass"]}: {esc(r["text"])}' for r in matched)
+            texts=''.join(f'<div>#{r["pass"]}: {esc(r["text"])}</div>' for r in matched)
             times=' / '.join(fmt(r.get('ocr_ms')) for r in matched)
             issues='; '.join(esc(r['error']) for r in matched if r.get('error')) or f"редакций: {', '.join(str(r.get('edit_distance','—')) for r in matched)}"
             path='../../'+item['file']
@@ -93,6 +93,7 @@ a{color:var(--blue)}.controls{display:flex;gap:10px;margin:14px 0}.controls butt
 <body><main><h1>Benchmark2 — сравнение OCR для чеков Торгсофт</h1>
 <p class="meta">Запуск: {esc(metadata['run_id'])} · 6 движков · 17 исходных ячеек · три прохода (первый прогрев) · один CPU, без GPU</p>
 <p class="warning">{'Измерения завершены' if complete else 'Предварительный отчёт: часть моделей ещё не выполнена'}. Эталонные тексты проверены по фото, но НЕ утверждены пользователем. Время и точность на этом ПК, а не универсальный показатель. Многострочные названия разбиваются одинаково для всех моделей; входные оригинальные ROI никогда не масштабируются.</p>
+<p class="warning">Пустой ответ без исключения учитывается как выполненный вызов, но в CER считается ошибкой распознавания. Нагрузка CPU во время части замеров достигала 100%; времена на этом ПК могут быть искажены конкуренцией процессов. Названия и итоги представлены поячеечно ниже. Результаты этой небольшой выборки не подтверждают качество всей обработки чека.</p>
 <div class="stats"><article><strong>{len(available)}/6</strong><small>моделей с полными замерами</small></article><article><strong>{fmt(fastest,' мс')}</strong><small>быстрейшие 17 ячеек, медиана двух проходов</small></article><article><strong>{sum(1 for r in rows_done if r['status']=='OK')}/{6*2*17}</strong><small>успешных измеренных ячеек</small></article></div>
 <h2>Анализ результатов</h2><p>{insight}</p><h2>Итог: миллисекунды и точность</h2><div class="scroll"><table><thead><tr><th>Модель</th><th>Статус</th><th>Загрузка</th><th>Медиана названия</th><th>17 ячеек</th><th>Точные названия</th><th>CER названий</th><th>CPU всего</th><th>CPU процесса*</th><th>Результаты</th><th>Ошибки</th></tr></thead><tbody>{table_rows}</tbody></table></div>
 <p class="meta">* CPU процесса: 100% = одно логическое ядро; показатель может быть выше 100%. CPU всего — периодические снимки загрузки компьютера; на очень коротких операциях приблизителен. Время загрузки модели и подготовки изображений отделено от времени OCR.</p>

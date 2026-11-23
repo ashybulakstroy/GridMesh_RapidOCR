@@ -8,6 +8,8 @@ from __future__ import annotations
 from collections import defaultdict
 from contextlib import contextmanager
 from contextvars import ContextVar
+from threading import Lock
+from ..config import setting
 
 _CURRENT = ContextVar('ocr_e4_rec_tracker',default=None)
 _SCOPE = ContextVar('ocr_e4_rec_scope',default=None)
@@ -15,13 +17,29 @@ _SCOPE = ContextVar('ocr_e4_rec_scope',default=None)
 class RecTracker:
     def __init__(self):
         self.events=[]
-    def record(self,keys,stage,model,mode,ms,*,success=True,note=None):
+        self.inputs={}
+        self.lock=Lock()
+        self.capture_images=setting('LOG_LEVEL','INFO').upper()=='DEBUG'
+    def record(self,keys,stage,model,mode,ms,*,success=True,note=None,image=None,result=None):
         keys=[str(k) for k in (keys if isinstance(keys,(list,tuple,set)) else [keys])]
         keys=list(dict.fromkeys(keys or ['unattributed']))
         event={'cells':keys,'stage':str(stage),'model_id':str(model),'mode':str(mode),
                'wall_ms':round(float(ms),3),'success':bool(success)}
         if note:event['note']=str(note)
-        self.events.append(event)
+        if result is not None:
+            values=getattr(result,'txts',None)
+            scores=getattr(result,'scores',None)
+            if values is not None:event['texts']=[str(x) for x in values]
+            if scores is not None:event['confidences']=[float(x) for x in scores]
+        with self.lock:
+            event['event_id']=len(self.events)
+            self.events.append(event)
+            numeric=any(k in ('receipt_total','printed_vat') or k.endswith((':price',':quantity',':printed_total')) for k in keys)
+            if self.capture_images and numeric and image is not None:
+                if isinstance(image,list):
+                    self.inputs[event['event_id']]={key:value.copy() for key,value in zip(keys,image) if value.size}
+                elif image.size:
+                    self.inputs[event['event_id']]=image.copy()
     def export(self):
         per=defaultdict(lambda:{'rec_only_exposures':0,'detector_pipeline_calls':0,
                                 'by_model':{},'stages':{}})
@@ -53,10 +71,20 @@ def rec_scope(keys,stage):
     try:yield
     finally:_SCOPE.reset(token)
 
-def record_rec(*,model='v5_cyrillic_mobile',mode='REC_only',ms=0,success=True,note=None,keys=None,stage=None):
+def current_trace():
+    tracker=_CURRENT.get()
+    return tracker.export() if tracker else {'events':[]}
+
+
+def current_inputs():
+    tracker=_CURRENT.get()
+    return tracker.inputs if tracker else {}
+
+
+def record_rec(*,model='v5_cyrillic_mobile',mode='REC_only',ms=0,success=True,note=None,keys=None,stage=None,image=None,result=None):
     tracker=_CURRENT.get()
     if tracker is None:return
     current=_SCOPE.get()
     keys=keys if keys is not None else (current[0] if current else ['unattributed'])
     stage=stage if stage is not None else (current[1] if current else 'unscoped')
-    tracker.record(keys,stage,model,mode,ms,success=success,note=note)
+    tracker.record(keys,stage,model,mode,ms,success=success,note=note,image=image,result=result)

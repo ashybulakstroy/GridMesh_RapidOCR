@@ -40,3 +40,49 @@ def test_actual_primary_input_is_saved_separately_from_cell_metadata(tmp_path):
     saved=cv2.imread(str(folder/record['images']['primary_ocr_input']),cv2.IMREAD_GRAYSCALE)
     assert np.array_equal(saved,actual)
     assert 'recorded_roi' in record['images']
+
+
+def test_footer_conflict_includes_source_photo_model_and_each_attempt_time(tmp_path):
+    image=np.arange(50*80,dtype=np.uint8).reshape(50,80)
+    book={'footer':[{'text':'90665','number':'90665','model':'v5'},
+                    {'text':'66500','number':'66500','model':'v5'}]}
+    trace={'events':[{'event_id':0,'cells':['receipt_total'],'model_id':'v5',
+                     'stage':'printed_footer_primary','wall_ms':4.25,'mode':'REC_only','success':True}]}
+    save_problem_digits(tmp_path,[],{},book,{},footer_context={'total':'90665','image':image,
+        'attempts':[{'strategy':'single_line','total':'66500','lines':[{'text':'66500',
+            'bbox':[[10,20],[50,20],[50,30],[10,30]]}]}]},rec_trace=trace,
+        attempt_inputs={0:image[20:30,10:50]})
+    directory=tmp_path/'problem_digits'
+    record=json.loads((directory/'manifest.json').read_text(encoding='utf-8'))['cells'][0]
+    assert record['field']=='receipt_total' and record['after']=='90665'
+    assert record['recognition_attempts'][0]['wall_ms']==4.25
+    assert record['recognition_attempts'][0]['model_id']=='v5'
+    assert record['footer_regions'][0]['source_bbox']==[10,20,50,30]
+    assert np.array_equal(cv2.imread(str(directory/record['recognition_attempts'][0]['input_image']),0),image[20:30,10:50])
+
+
+def test_low_confidence_failed_attempt_and_vat_conflict_are_included(tmp_path):
+    rows=[{'row_id':1,'cells':{'quantity':{'text':'2','confidence':.5}}}]
+    book={'vat':[{'text':'32','number':'32'},{'text':'320','number':'320'}]}
+    trace={'events':[{'cells':['2:price','3:price'],'success':False,'stage':'batch',
+                     'model_id':'v5','wall_ms':10,'mode':'REC_only'}]}
+    save_problem_digits(tmp_path,rows,{},book,{},rec_trace=trace)
+    cells=json.loads((tmp_path/'problem_digits/manifest.json').read_text(encoding='utf-8'))['cells']
+    assert {(x['row_id'],x['field']) for x in cells}=={(1,'quantity'),(2,'price'),(3,'price'),(None,'printed_vat')}
+    assert cells[1]['recognition_attempts'][0]['duration_scope']=='shared_batch'
+
+
+def test_rec_tracker_preserves_result_model_time_and_debug_input(monkeypatch):
+    from types import SimpleNamespace
+    from App.ocr.experiment_rec_trace import RecTracker
+    monkeypatch.setenv('LOG_LEVEL','DEBUG')
+    tracker=RecTracker();image=np.ones((10,20),np.uint8)
+    tracker.record(['1:price'],'retry','v6','REC_only',12.5,image=image,
+                   result=SimpleNamespace(txts=['17'],scores=[.7]))
+    event=tracker.export()['events'][0]
+    assert event['texts']==['17'] and event['wall_ms']==12.5 and event['model_id']=='v6'
+    image[:]=0
+    assert tracker.inputs[event['event_id']].all()
+    monkeypatch.setenv('LOG_LEVEL','INFO')
+    quiet=RecTracker();quiet.record(['receipt_total'],'footer','v5','REC_only',2,image=image)
+    assert quiet.inputs=={}

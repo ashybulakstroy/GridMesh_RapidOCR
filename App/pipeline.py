@@ -26,7 +26,7 @@ from .ocr.experiment_original import OriginalNumericCache
 from .ocr.experiment_footer import scan_footer
 from .ocr.experiment_vat import scan_printed_vat, seed_printed_vat, observed_vat_text
 from .ocr.experiment_models import ExperimentModelPool
-from .ocr.experiment_rec_trace import RecTracker, activate, deactivate, rec_scope
+from .ocr.experiment_rec_trace import RecTracker, activate, deactivate, rec_scope, current_trace, current_inputs
 from .ocr.experiment_auto import auto_apply_consensus
 from .config import positive_int, setting, ROOT
 from .ocr.ocr_performance import OCRPerformance
@@ -835,7 +835,10 @@ def _process(data, profile, job_dir, rectify):
                 numeric_book_export, numeric_auto_corrections, original_numeric_cache.crops,
                 debug_perf.primary_numeric_inputs,
                 footer_context={'image':image,'total':total,'lines':footer_lines,
-                                'attempts':footer_attempts+footer_variant_attempts})
+                                'attempts':footer_attempts+footer_variant_attempts},
+                rec_trace=current_trace(), attempt_inputs=current_inputs(),
+                vat_context=vat_evidence, math_match=match)
+            processing_log.extend(problem_digits.pop('log_entries',[]))
             processing_log.append({'type':'debug', 'stage':'Проблемные цифры',
                 'message':f"Фото проблемных цифровых ячеек: {problem_digits['count']}. Отчёт: {job_dir.relative_to(ROOT).as_posix()}/problem_digits/report.html"})
         except Exception as exc:

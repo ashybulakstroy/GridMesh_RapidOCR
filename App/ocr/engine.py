@@ -112,11 +112,11 @@ def _run_cyrillic_rec(image):
         if model_id != 'v5_cyrillic_mobile' and not result.txts:
             raise RuntimeError('Модель вернула пустой результат')
         _LAST_REC_MODEL.set(model_id)
-        record_rec(model=model_id,ms=(perf_counter()-start)*1000)
+        record_rec(model=model_id,ms=(perf_counter()-start)*1000,image=image,result=result)
         return result
     except Exception as exc:
         record_rec(model=_NAME_MODEL.get(),ms=(perf_counter()-start)*1000,
-                   success=False,note=str(exc))
+                   success=False,note=str(exc),image=image)
         if _NAME_MODEL.get() != 'v5_cyrillic_mobile':
             from .debug_performance import report_issue
             report_issue(source='RapidOCR',operation='primary_rec',kind='model_exception',error=exc,
@@ -124,7 +124,7 @@ def _run_cyrillic_rec(image):
             start=perf_counter()
             result=engine()(image,use_det=False,use_cls=False)
             _LAST_REC_MODEL.set('v5_cyrillic_mobile')
-            record_rec(model='v5_cyrillic_mobile',ms=(perf_counter()-start)*1000)
+            record_rec(model='v5_cyrillic_mobile',ms=(perf_counter()-start)*1000,image=image,result=result)
             return result
         raise
 
@@ -132,11 +132,11 @@ def _run_english_rec(image):
     start=perf_counter()
     try:
         result=english_engine()(image,use_det=False,use_cls=False)
-        record_rec(model='v5_english_mobile',ms=(perf_counter()-start)*1000)
+        record_rec(model='v5_english_mobile',ms=(perf_counter()-start)*1000,image=image,result=result)
         return result
     except Exception as exc:
         record_rec(model='v5_english_mobile',ms=(perf_counter()-start)*1000,
-                   success=False,note=str(exc))
+                   success=False,note=str(exc),image=image)
         raise
 
 
@@ -150,10 +150,10 @@ def read_full(image, *, footer_mode=False, cell_mode=False):
         try:
             result = (footer_engine() if footer_mode or cell_mode else engine())(image, use_det=True, use_cls=False)
             record_rec(mode='DET+REC',model='v5_cyrillic_mobile',ms=(perf_counter()-clock)*1000,
-                       note='Detector may dispatch multiple internal REC calls; exact count unavailable')
+                       note='Detector may dispatch multiple internal REC calls; exact count unavailable',image=image,result=result)
         except Exception as exc:
             record_rec(mode='DET+REC',model='v5_cyrillic_mobile',ms=(perf_counter()-clock)*1000,
-                       success=False,note=str(exc))
+                       success=False,note=str(exc),image=image)
             raise
     if result.boxes is None or result.txts is None: return []
     lines = []
