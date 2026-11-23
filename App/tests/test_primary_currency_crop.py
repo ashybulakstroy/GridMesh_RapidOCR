@@ -8,6 +8,17 @@ from App.ocr.numeric_roi import prepare_numeric_input, split_price_currency
 from App.ocr import p1_batch
 
 
+def test_fragmented_border_does_not_prevent_currency_exclusion(monkeypatch):
+    monkeypatch.setenv('OCR_PRICE_CURRENCY_CROP','1')
+    image=cv2.imread(str(Path(__file__).parent/'fixtures/price_9000_fragmented_border.png'))
+    prepared,roi=prepare_numeric_input(image,'price')
+    assert roi['currency_removed_before_ocr']
+    assert roi['ocr_roi_bbox']==[0,0,72,48]
+    assert np.array_equal(prepared,image[:,:72])
+    # The cell's four digits at x=20..65 remain pixel-for-pixel intact.
+    assert np.array_equal(prepared[:,20:65],image[:,20:65])
+
+
 @pytest.mark.parametrize('mode',['cell','batch'])
 def test_actual_ocr_receives_price_pixels_without_currency(monkeypatch,mode):
     monkeypatch.setenv('OCR_PRICE_CURRENCY_CROP','1')

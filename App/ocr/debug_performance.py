@@ -86,6 +86,16 @@ class DebugPerformance:
         self.geometry = []
         self.crop_summary = {}
         self.lanes = []
+        self.primary_numeric_inputs = {}
+
+    def capture_numeric_input(self, cell):
+        """Keep the first actual recognizer ROI in memory for debug evidence."""
+        if cell.column_id not in ('quantity','price','printed_total'):
+            return
+        key = (cell.row_id,cell.column_id)
+        with self.lock:
+            if key not in self.primary_numeric_inputs:
+                self.primary_numeric_inputs[key] = cell.image.copy()
 
     def _rss_mb(self):
         return round(self.proc.memory_info().rss / 1048576, 2)

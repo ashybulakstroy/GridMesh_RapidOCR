@@ -18,6 +18,16 @@ def split_price_currency(image, *, clean_rule_fragments=False):
                      and .15 <= s[cv2.CC_STAT_WIDTH]/s[cv2.CC_STAT_HEIGHT] <= 2
                      and s[cv2.CC_STAT_HEIGHT] < h*.9]
     small_height = max(3, float(np.median(glyph_heights))*.4) if glyph_heights else 3
+    if clean_rule_fragments and glyph_heights:
+        # A fragmented cell border can survive the full-column rule filter.
+        # Require distributed support far taller than a glyph, so an isolated
+        # narrow digit 1 is retained. Only the detection mask is changed.
+        reference_height = float(np.median(glyph_heights))
+        for edge in (stats[1:,0] <= 1, stats[1:,0]+stats[1:,2] >= w-1):
+            fragments = np.flatnonzero(edge & (stats[1:,2] <= 2)) + 1
+            if (len(fragments) and stats[fragments,3].sum() > h*.45 and
+                    (stats[fragments,1]+stats[fragments,3]).max()-stats[fragments,1].min() > reference_height*2.5):
+                ink[np.isin(labels,fragments)] = 0
     for component in range(1,count):
         bw = stats[component,cv2.CC_STAT_WIDTH]
         bh = stats[component,cv2.CC_STAT_HEIGHT]

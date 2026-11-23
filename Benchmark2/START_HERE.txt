@@ -6,7 +6,11 @@ Benchmark2 — installation from any Windows drive
 3. Original project used READ-ONLY:
    C:\Work\Projects\Prj_18_OCR_2\
 4. Separate Python 3.14 .venv and OCR results are created in this Benchmark2 folder.
-5. To restart after setup: double click run_benchmark2.bat
+5. Full setup output (including pip) is saved to Benchmark2\logs\setup_<date>_<time>.log.
+   A successful log ends with: [BENCHMARK2] Setup exit code: 0
+6. To restart after setup: double click run_benchmark2.bat
+
+See docs\README.md for the task, plan, model inventory and progress log.
 
 Do not copy a pre-existing .venv between drive locations.
 For relocating an already installed Benchmark2, delete only Benchmark2\.venv

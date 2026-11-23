@@ -827,7 +827,22 @@ def _process(data, profile, job_dir, rectify):
     map_path = job_dir/'rectification_map.npz'
     np.savez_compressed(map_path, map_x=rect.map_x, map_y=rect.map_y)
     geometry['inverse_map'] = str(map_path.relative_to(ROOT)).replace('\\', '/')
+    problem_digits = None
+    if debug_perf is not None:
+        from .ocr.problem_digits import save_problem_digits
+        try:
+            problem_digits = save_problem_digits(job_dir, rows, crop_map,
+                numeric_book_export, numeric_auto_corrections, original_numeric_cache.crops,
+                debug_perf.primary_numeric_inputs,
+                footer_context={'image':image,'total':total,'lines':footer_lines,
+                                'attempts':footer_attempts+footer_variant_attempts})
+            processing_log.append({'type':'debug', 'stage':'Проблемные цифры',
+                'message':f"Фото проблемных цифровых ячеек: {problem_digits['count']}. Отчёт: {job_dir.relative_to(ROOT).as_posix()}/problem_digits/report.html"})
+        except Exception as exc:
+            processing_log.append({'type':'error','stage':'Проблемные цифры',
+                'message':f'Не удалось сохранить фото цифровых ячеек: {type(exc).__name__}: {exc}'})
     return {'status': 'review' if geometry['warnings'] else 'ok', 'geometry': geometry,
+            'problem_digits': problem_digits,
             'processing_log': processing_log,
             'original': png(image), 'rectified': png(overlay), 'rows': rows,
             'numeric_issues': numeric_issues,

@@ -102,6 +102,8 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
                  numeric_roi_changed=sum(info.get('changed',False) for info in roi_metadata.values()))
     for cell in working:
         key = (cell.row_id, cell.column_id)
+        if _debug is not None:
+            _debug.capture_numeric_input(cell)
         if mode == 'cell':
             _cell_t0=rec_counter() if _debug is not None else None
             try:

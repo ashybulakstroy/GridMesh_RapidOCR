@@ -72,6 +72,7 @@ def scan_footer(image, y_bottom, current_total, current_sum, *, read_line=None,
                 response=read_line(crop)
             line=response or {}
             result.append({'strategy':strategy,'total':_check_text(line.get('text')),
+                'source_roi_bbox':[x0,y0,w,y1], 'preprocessing':method,'scale':scale,
                 'text':line.get('text'),'confidence':line.get('confidence'),
                 'model':'PP-OCRv5 Cyrillic Mobile / RapidOCR 3.x',
                 'wall_ms':round((perf_counter()-start)*1000,3)})
