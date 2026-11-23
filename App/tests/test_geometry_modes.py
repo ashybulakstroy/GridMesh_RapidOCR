@@ -1,6 +1,24 @@
 import numpy as np
 from App.geometry import service
 from App.geometry.geometry_lab.detection import Rule
+import pytest
+
+
+@pytest.mark.parametrize('auto_ys,physical_ys,expected',[
+    ((60,110,170),(20,60,90,110,170),(20,60,90,110,170)),
+    ((20,60,90,110,170),(60,110,170),(20,60,90,110,170)),
+])
+def test_vertical_completion_preserves_more_complete_row_boundaries(monkeypatch,auto_ys,physical_ys,expected):
+    image=np.full((200,250,3),255,np.uint8)
+    v=[Rule('v',np.array([float(x)]),float(x),1.,(20,180)) for x in (20,50,140,180,225)]
+    def horizontal(ys):return [Rule('h',np.array([float(y)]),float(y),1.,(20,225)) for y in ys]
+    automatic={'vertical':[v[i] for i in (0,1,3,4)],'horizontal':horizontal(auto_ys)}
+    physical={'vertical':v,'horizontal':horizontal(physical_ys)}
+    monkeypatch.setattr(service,'detect_for_lab',lambda _:(automatic,{'autogrid':{}}))
+    monkeypatch.setattr(service,'detect_physical_graph',lambda _:(physical,{'selection':'confirmed_test_lines'}))
+    monkeypatch.setattr(service,'_refine_vertical_by_ink',lambda _,rule,__:rule)
+    result,_,_=service.build_grid(image)
+    assert [rule.position for rule in result.info['source_grid']['horizontal']]==list(expected)
 
 
 def test_straight_observed_grid_uses_original_pixels(monkeypatch):

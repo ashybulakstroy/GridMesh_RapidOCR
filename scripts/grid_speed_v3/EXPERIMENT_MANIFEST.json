@@ -1,0 +1,11 @@
+{
+  "title": "GridSpeed V3: физическая сетка, сравнительный эксперимент",
+  "repo": "https://github.com/ashybulakstroy/GridMesh_RapidOCR",
+  "baseline_commit": "c80b36cd9f5156f8394f6c26ae90b6e2655beb4a",
+  "baseline_date_utc": "2026-11-23T13:41:15Z",
+  "runs_on": "Windows 10, project .venv, Python 3.14 / cv2 / numpy / scipy",
+  "production_modified": false,
+  "scenarios": ["baseline", "physical_only", "scaled_085", "scaled_070", "autogrid_only"],
+  "outputs": ["summary.html", "results.csv", "results.json", "overlays/*.png", "photos/*"],
+  "source_image_policy": "real source images read from local repository; no image files in this ZIP"
+}

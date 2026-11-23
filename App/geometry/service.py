@@ -106,7 +106,11 @@ def build_grid(image, *, rectify=False, phase=None):
             graph = [v.position for v in physical['vertical']]
             tolerance = max(3.0, image.shape[1]*.008)
             matches = [min(range(len(graph)), key=lambda i: abs(graph[i]-x)) for x in observed]
-            if len(set(matches)) == 4 and all(abs(graph[i]-x) <= tolerance for x,i in zip(observed,matches)):
+            # Completing a column must not discard additional source-confirmed
+            # row boundaries found by the physical detector (including header).
+            # Otherwise two products can become the apparent header band.
+            if (len(set(matches)) == 4 and all(abs(graph[i]-x) <= tolerance for x,i in zip(observed,matches))
+                    and len(data['horizontal']) >= len(physical['horizontal'])):
                 missing = next(i for i in range(5) if i not in matches)
                 vertical = list(physical['vertical'])
                 vertical[missing] = _refine_vertical_by_ink(image, vertical[missing], data['horizontal'])

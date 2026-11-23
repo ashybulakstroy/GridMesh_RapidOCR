@@ -1,0 +1,75 @@
+{
+  "source": "User provided performance_profile.json (receipt 51 040 KZT)",
+  "wall_ms": 1006.35,
+  "samples": {
+    "Сохранение исходного изображения": 0.63,
+    "Подготовка и ориентация изображения": 17.47,
+    "Поиск физической сетки": 706.99,
+    "Создание сетки Grid Mesh": 68.37,
+    "Подготовка OCR и чтение ячеек": 0.29,
+    "Подготовка ячеек таблицы": 1.06,
+    "Поячеечный OCR: итог, названия и цифры параллельно": 89.58,
+    "OCR P1: сборка товарных строк": 0.06,
+    "OCR P1: выборочное восстановление чисел": 2.59,
+    "OCR P1: проверка напечатанного итога": 0.25,
+    "Сверка матрицы чисел": 0.13,
+    "E4: поиск первого предварительного результата": 3.05,
+    "E4: полная проверка чисел": 0.07,
+    "E4: полная проверка после предварительного результата": 57.28,
+    "Сборка и проверка электронного чека": 53.16,
+    "Сохранение результата": 4.58
+  },
+  "geometry_substeps": [
+    {
+      "step": "autogrid_gridrefine_v3",
+      "wall_ms": 196.296,
+      "rss_after_mb": 259.97,
+      "detail": {
+        "found": false
+      }
+    },
+    {
+      "step": "physical_grid_graph_v3",
+      "wall_ms": 510.598,
+      "rss_after_mb": 259.97,
+      "detail": {
+        "found": true
+      }
+    },
+    {
+      "step": "recover_observed_horizontal",
+      "wall_ms": 0.001,
+      "rss_after_mb": 259.97,
+      "detail": {
+        "recovered": 0
+      }
+    },
+    {
+      "step": "recover_left_edges",
+      "wall_ms": 0.001,
+      "rss_after_mb": 259.97,
+      "detail": {
+        "recovered": 0
+      }
+    },
+    {
+      "step": "grid_mesh_construction",
+      "wall_ms": 39.976,
+      "rss_after_mb": 263.4,
+      "detail": {
+        "rectify_full_grid": false
+      }
+    },
+    {
+      "step": "safety_and_overlay",
+      "wall_ms": 23.74,
+      "rss_after_mb": 263.44
+    }
+  ],
+  "source_shape": [
+    1599,
+    899
+  ],
+  "opencv_threads": 2,
+  "commit_for_experiment": "c80b36cd9f5156f8394f6c26ae90b6e2655beb4a"
+}
