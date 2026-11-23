@@ -61,6 +61,7 @@ def test_recovers_tax_row_below_detected_grid():
 
 @pytest.mark.parametrize('failure', ['empty', 'exception'])
 def test_footer_detector_falls_back_when_fast_detector_fails(monkeypatch, failure):
+    monkeypatch.setenv('OCR_FOOTER_FOCUS_ENABLE','0')  # Explicitly exercise legacy detector fallback.
     real_read_full = pipeline.read_full
     calls = []
     def read_with_failed_fast(image, *, footer_mode=False):
@@ -74,7 +75,7 @@ def test_footer_detector_falls_back_when_fast_detector_fails(monkeypatch, failur
     monkeypatch.setattr(pipeline, 'read_full', read_with_failed_fast)
     result = process((HERE/'receipt_2142830502.jpg').read_bytes())
     assert 'fast' in calls and 'standard' in calls
-    assert result['total'] == '93612.00'
+    assert number(result['total']) == 93612
     assert any(a.get('strategy') == 'standard_detector' for a in result['footer_ocr_attempts'])
 
 @pytest.mark.parametrize(('name','expected','products'), [

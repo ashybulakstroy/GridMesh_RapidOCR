@@ -24,6 +24,7 @@ from .ocr.p1_double_retry import retry_suspect_cells
 from .ocr.experiment_matrix import CandidateBook, solve_matrix
 from .ocr.experiment_original import OriginalNumericCache
 from .ocr.experiment_footer import scan_footer
+from .ocr.footer_line_guided_v1 import guide_from_grid, attempt_focused_footer
 from .ocr.experiment_vat import scan_printed_vat, seed_printed_vat, observed_vat_text
 from .ocr.experiment_models import ExperimentModelPool
 from .ocr.experiment_rec_trace import RecTracker, activate, deactivate, rec_scope, current_trace, current_inputs
@@ -339,6 +340,7 @@ def _process(data, profile, job_dir, rectify):
     rows = []
     numeric_issues = []
     xs = [int(round(x)) for x in rect.xs]; ys = [int(round(y)) for y in rect.ys]
+    footer_focus_guide = guide_from_grid(rect, image.shape)
     if len(xs) == 5:
         columns = {'number':0, 'name':1, 'quantity':2, 'price':3}
     else:
@@ -391,7 +393,7 @@ def _process(data, profile, job_dir, rectify):
                       else 'Поячеечный OCR: итог и таблица параллельно')
         def read_footer_and_candidates():
             footer_start = time.perf_counter()
-            footer_result = read_printed_footer(image, table_source_bottom(rect,xs,ys))
+            footer_result = read_printed_footer(image, table_source_bottom(rect,xs,ys), footer_guide=footer_focus_guide)
             footer_result['footer_read_ms'] = round((time.perf_counter()-footer_start)*1000,3)
             if e4_enabled and not adaptive_enabled:
                 candidate_start = time.perf_counter()
@@ -500,7 +502,7 @@ def _process(data, profile, job_dir, rectify):
     if recovered_tax_bottom is not None:
         y_bottom = max(y_bottom, recovered_tax_bottom)
     if parallel_footer is None or parallel_footer['y_bottom'] != y_bottom:
-        footer_result = read_printed_footer(image, y_bottom, rows)
+        footer_result = read_printed_footer(image, y_bottom, rows, footer_guide=footer_focus_guide)
     else:
         footer_result = parallel_footer
     total, footer_lines, footer_attempts = (footer_result['total'],
@@ -865,12 +867,37 @@ def _process(data, profile, job_dir, rectify):
             'total': total, 'computed_total': str(computed), 'math_match': match,
             'vat': {'status': 'not_applicable' if vat_ok is None else 'match' if vat_ok else 'mismatch',
                     'rate_percent': str(vat_rate), 'amount': str(vat_sum) if taxes else None},
-            'footer_ocr': footer_lines, 'footer_ocr_attempts': footer_attempts, 'timings': {'geometry_s': round(geo_s, 3),
+            'footer_ocr': footer_lines, 'footer_ocr_attempts': footer_attempts,
+            'footer_focus': footer_result.get('footer_focus'), 'timings': {'geometry_s': round(geo_s, 3),
             'ocr_s': round(ocr_s, 3), 'total_s': round(time.perf_counter()-started, 3)}}
 
 
-def read_printed_footer(image, y_bottom, rows=()):
+def read_printed_footer(image, y_bottom, rows=(), *, footer_guide=None):
     """Read photographed footer independently; optional legacy sum evidence."""
+    # FOCUSED_FOOTER_EXPERIMENT_V1: optical evidence strictly between source rules.
+    focused_attempt=None
+    focus_info={'status':'disabled'}
+    if setting('OCR_FOOTER_FOCUS_ENABLE','1') == '1':
+        def focused_reader(crop):
+            with rec_scope(['receipt_total'], 'printed_footer_focused'):
+                return read_line(crop)
+        min_conf=float(setting('OCR_FOOTER_FOCUS_MIN_CONF','0.86'))
+        # A recovered VAT row can extend the table after this guide was built.
+        # Do not read that newly recovered row as though it were the footer.
+        current_guide=footer_guide
+        if (current_guide and abs(float(current_guide['grid_bottom_y'])-y_bottom) >
+                max(12,float(current_guide['last_row_height'])*.6)):
+            current_guide=None
+        focused=attempt_focused_footer(image,current_guide,focused_reader,number,
+                                       min_confidence=min_conf)
+        focus_info={**focused['diagnostics'],
+                    'accepted':focused['accepted'],
+                    'result':focused['total']}
+        focused_attempt=focused['attempt']
+        if focused['accepted']:
+            return {'total':focused['total'],'lines':focused['lines'],
+                    'attempts':[focused_attempt], 'y_bottom':y_bottom,
+                    'footer_focus':focus_info}
     footer_top = max(0,y_bottom-20)
     # All footer recognitions are attributable to one printed total.
     def footer_read_line(source_crop):
@@ -912,7 +939,7 @@ def read_printed_footer(image, y_bottom, rows=()):
     fast_x = int(image.shape[1]*.50)
     fast_top, fast_bottom = max(0,y_bottom+2), min(image.shape[0], y_bottom+int(image.shape[1]*.05))
     direct = footer_read_line(image[fast_top:fast_bottom,fast_x:])
-    footer_attempts = []
+    footer_attempts = [focused_attempt] if focused_attempt is not None else []
     total, footer_lines = None, []
     if direct:
         direct['bbox'] = [[fast_x,fast_top], [image.shape[1],fast_top],
@@ -969,7 +996,7 @@ def read_printed_footer(image, y_bottom, rows=()):
             if second_total is not None and (total is None or second_confidence > total_confidence):
                 total, footer_lines = second_total, second_lines
     return {'total':total, 'lines':footer_lines, 'attempts':footer_attempts,
-            'y_bottom':y_bottom}
+            'y_bottom':y_bottom, 'footer_focus':focus_info}
 
 
 def table_source_bottom(rect, xs, ys):
