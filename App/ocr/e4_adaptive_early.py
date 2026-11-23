@@ -168,6 +168,9 @@ def adaptive_collect(rows, book, crops, vat_rate, collect_one, on_first_ready,
                     if vat_key == key:
                         book.add_vat(text, score, 'vat_row_'+path,
                                      row_id=key[0], field=key[1], model=model)
+                # A newly read 1-unit tax column may unlock a real VAT witness.
+                # Rebuild the VAT evidence from actual OCR candidates before E4.
+                seed_printed_vat(rows, book)
                 if _observed_numbers(book, key) - old_numbers:
                     if check():
                         break

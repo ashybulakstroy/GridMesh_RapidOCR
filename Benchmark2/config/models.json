@@ -1,0 +1,8 @@
+[
+  {"id":"v3_cyrillic_mobile","name":"PP-OCRv3 Mobile Cyrillic (RapidOCR PP-OCRv4 route)","kind":"rapid","ocr_version":"PPOCRV4","model_type":"MOBILE","lang":"cyrillic","cyrillic":true,"source":"RapidOCR default_models.yaml"},
+  {"id":"v5_cyrillic_mobile","name":"PP-OCRv5 Mobile Cyrillic","kind":"rapid","ocr_version":"PPOCRV5","model_type":"MOBILE","lang":"cyrillic","cyrillic":true,"source":"GridMesh benchmark/config/models.json"},
+  {"id":"v6_tiny_cyrillic_optional","name":"PP-OCRv6 Tiny Cyrillic (Metrika Labs ONNX)","kind":"rapid","lang":"cyrillic","cyrillic":true,"model_path":"models/ppocrv6_tiny_cyrillic/inference.onnx","model_sha256":"d804d23767efd82e188f591d77589d213d102a759785436c89ae6afb88721d05","hf_repo":"metrika-labs/PP-OCRv6_tiny_rec_cyrillic_onnx","hf_file":"inference.onnx","rec_img_shape":[3,48,640],"source":"GridMesh benchmark/config/models.json"},
+  {"id":"v6_medium_cyrillic","name":"PP-OCRv6 Medium Cyrillic (Metrika Labs ONNX)","kind":"rapid","lang":"cyrillic","cyrillic":true,"model_path":"models/ppocrv6_medium_cyrillic/inference.onnx","hf_repo":"metrika-labs/PP-OCRv6_medium_rec_cyrillic_onnx","hf_file":"inference.onnx","rec_img_shape":[3,48,640],"source":"huggingface.co/metrika-labs/PP-OCRv6_medium_rec_cyrillic_onnx"},
+  {"id":"tesseract_fast","name":"Tesseract LSTM + tessdata_fast rus+eng","kind":"tesseract","cyrillic":true,"source":"tesserocr 2.13.0"},
+  {"id":"windows_ocr","name":"Windows.Media.Ocr (ru-RU)","kind":"windows","cyrillic":true,"source":"Windows 10 system OCR / PyWinRT"}
+]

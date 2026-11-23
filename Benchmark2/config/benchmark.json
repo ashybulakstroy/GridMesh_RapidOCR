@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "total_passes": 3,
+  "warmup_passes": 1,
+  "measured_passes": 2,
+  "input_cells": 17,
+  "input_policy": "Original image-pixel ROIs from three actual Torgsoft receipts; no artificial resize; split multi-line names identically for all recognition engines",
+  "execution_policy": "sequential single-cell OCR, same input pieces in original order; default model parameters except task/language/path/required shape; one engine per model, no concurrent OCR jobs",
+  "score_policy": "CER / exact by script-supported fields; no transliteration; provisional agent-verified transcription, owner not approved",
+  "base_project": "C:\\Work\\Projects\\Prj_18_OCR_2",
+  "source_repository": "ashybulakstroy/GridMesh_RapidOCR",
+  "model_count": 6,
+  "model_policy": "Six Cyrillic-capable OCR engines; English-only variants excluded",
+  "parameter_policy": "Only required model selection, script/language, detector disabled, architecture-required shape and single-line Tesseract PSM; no tuning sweeps"
+}

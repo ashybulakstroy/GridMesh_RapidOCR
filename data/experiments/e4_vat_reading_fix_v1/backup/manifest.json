@@ -1,0 +1,15 @@
+{
+  "project_commit": "04a13da2f35f46f74ff7886cbcfb8edf0199aaa5",
+  "original_blobs": {
+    "App/ocr/experiment_vat.py": "bd30563da83fc1d4c32a6a948e6aefa9fc79ac86",
+    "App/pipeline.py": "44ee822ecde084aea49f6360d695d5e2501c99ee",
+    "App/ocr/e4_adaptive_early.py": "4216da884c915293ac3a20d985a6f7fe15e126a4"
+  },
+  "patched_blobs": {
+    "App/ocr/experiment_vat.py": "635f36e4b32d4ef05631e22fdafeeb5a873751b0",
+    "App/pipeline.py": "540cd55b9f229083f13200ff0bd982040df4d881",
+    "App/ocr/e4_adaptive_early.py": "17c7c531a4698100aec97852fc34c9f221209f5d"
+  },
+  "new_file": "App/ocr/vat_witness.py",
+  "witness_sha256": "50a972ea852f661a299d3c4fd065057374848a1457b73aa0200e96327fe109f3"
+}

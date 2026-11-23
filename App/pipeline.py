@@ -24,7 +24,7 @@ from .ocr.p1_double_retry import retry_suspect_cells
 from .ocr.experiment_matrix import CandidateBook, solve_matrix
 from .ocr.experiment_original import OriginalNumericCache
 from .ocr.experiment_footer import scan_footer
-from .ocr.experiment_vat import scan_printed_vat, seed_printed_vat
+from .ocr.experiment_vat import scan_printed_vat, seed_printed_vat, observed_vat_text
 from .ocr.experiment_models import ExperimentModelPool
 from .ocr.experiment_rec_trace import RecTracker, activate, deactivate, rec_scope
 from .ocr.experiment_auto import auto_apply_consensus
@@ -652,8 +652,8 @@ def _process(data, profile, job_dir, rectify):
             seed = seed_printed_vat(rows, book)
             vat_evidence = {'source':seed['source'], 'source_status':seed['status'],
                             'observations':[], 'probes':0, 'errors':[]}
-            if book.vat:
-                printed_vat_observed=book.vat[0]['text']
+            printed_vat_observed = (observed_vat_text(book, preferred=seed.get('text'))
+                                    or printed_vat_observed)
             numeric_matrix = solve_matrix(rows, book, vat_rate,
                 max_nodes=positive_int('OCR_MATRIX_MAX_NODES',100000))
             initial_matrix_status = numeric_matrix['status']
@@ -691,8 +691,8 @@ def _process(data, profile, job_dir, rectify):
                     model_pool=model_pool,
                     always_check=setting('OCR_VAT_VERIFY_ALWAYS','1') == '1',
                     max_probes=positive_int('OCR_VAT_MAX_PROBES',6))
-                if book.vat:
-                    printed_vat_observed=book.vat[0]['text']
+                printed_vat_observed = (observed_vat_text(book, preferred=printed_vat_observed)
+                                        or printed_vat_observed)
                 original_roi_experiment = original_numeric_cache.run_suspects(
                     rows, book, printed_total=total,
                     max_calls=positive_int('OCR_ORIGINAL_MAX_RECOGNITIONS',8),
@@ -711,12 +711,25 @@ def _process(data, profile, job_dir, rectify):
                     if second_pass['recognitions']:
                         numeric_matrix = solve_matrix(rows, book, vat_rate,
                             max_nodes=positive_int('OCR_MATRIX_MAX_NODES',100000))
+            # Display only a VAT figure that was actually observed by OCR.
+            if numeric_matrix.get('status') == 'unique_math_match' and numeric_matrix.get('solutions'):
+                printed_vat_observed = (observed_vat_text(
+                    book, preferred=numeric_matrix['solutions'][0].get('vat_printed'))
+                    or printed_vat_observed)
             numeric_auto_corrections = auto_apply_consensus(
                 rows,book,numeric_matrix,total,
                 enabled=setting('OCR_E4_AUTO_APPLY','1') == '1')
             if numeric_auto_corrections['status']=='applied':
                 total=numeric_auto_corrections['printed_total']
-                printed_vat_observed=(numeric_matrix['solutions'][0].get('vat_printed') or printed_vat_observed)
+                # Corrections may turn an unreadable VAT row into a valid
+                # photographed value (e.g. quantity=23200, price=1).
+                post_e4_vat_seed = seed_printed_vat(rows, book)
+                if post_e4_vat_seed['source'] is not None:
+                    vat_evidence['source'] = post_e4_vat_seed['source']
+                    vat_evidence['post_e4_source_status'] = post_e4_vat_seed['status']
+                printed_vat_observed = (observed_vat_text(
+                    book, preferred=numeric_matrix['solutions'][0].get('vat_printed'))
+                    or printed_vat_observed)
                 numeric_matrix = solve_matrix(rows, book, vat_rate,
                     max_nodes=positive_int('OCR_MATRIX_MAX_NODES',100000))
                 processing_log.append({'type':'operation','stage':'E4 автоматическая сверка',
@@ -755,7 +768,7 @@ def _process(data, profile, job_dir, rectify):
             if numeric_matrix['critical_ambiguity']:
                 geometry['warnings'].append('Найдены разные математически согласованные комбинации цифр. Выбрана комбинация с наибольшей уверенностью OCR. Пожалуйста, проверьте цифры.')
             if any(row.get('kind')=='tax' for row in rows) and not numeric_matrix['printed_vat_observed']:
-                geometry['warnings'].append('Нет независимого OCR-подтверждения суммы НДС; проверены только значения ячеек и общий итог.')
+                geometry['warnings'].append('Напечатанный НДС не удалось надёжно прочитать из числовых ячеек строки НДС; сумма, рассчитанная по ставке, не подставлялась.')
             if numeric_matrix['recommended_changes']:
                 geometry['warnings'].append('Матрица сохранила альтернативные цифры; исходные OCR-значения оставлены без автоматической подмены.')
             processing_log.append({'type':'operation', 'stage':'Эксперимент E1',

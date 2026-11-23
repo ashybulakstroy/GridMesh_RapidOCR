@@ -78,6 +78,18 @@ def test_equivalent_decimal_candidate_does_not_repeat_solver():
     assert out['matrix_checks']==1 and out['probes_used']==1 and not out['early_found']
 
 
+def test_new_unit_price_candidate_unlocks_observed_vat():
+    rows=receipt();rows[1]['cells']['price']['text']='bad'
+    book=book_for(rows);published=[]
+    def collect(crops):
+        return {'errors':[], 'observations':[{'row_id':2,'field':'price',
+                'text':'1','confidence':.95,'model_id':'v5_cyrillic_mobile'}]}
+    out=adaptive_collect(rows,book,{(2,'price'):None},16,collect,
+                         lambda *args:published.append(args))
+    assert out['early_found'] and len(published)==1
+    assert [x['number'] for x in book.vat_values()]==['32']
+
+
 def test_ocr_failure_continues_other_cells():
     rows=receipt();book=book_for(rows,'999');seen=[]
     def collect(crops):

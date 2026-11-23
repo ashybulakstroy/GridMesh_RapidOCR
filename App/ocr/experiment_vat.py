@@ -14,38 +14,7 @@ import cv2
 from .numeric_roi import crop_numeric_ink
 from .p1_numbers import parse_number
 from .experiment_rec_trace import rec_scope
-
-
-def vat_source(rows):
-    tax = [row for row in rows if row.get('kind') == 'tax']
-    if len(tax) != 1:
-        return None, 'no_single_tax_row'
-    row = tax[0]
-    cells = row.get('cells', {})
-    if 'printed_total' in cells:
-        return (row['row_id'], 'printed_total'), 'printed_tax_row_total'
-    # With an observed 1-unit tax row, its printed unit price IS the VAT amount.
-    # A guessed or calculated quantity of 1 is not a sufficient witness.
-    quantity = parse_number(cells.get('quantity', {}).get('text'))
-    if quantity == Decimal(1) and 'price' in cells:
-        return (row['row_id'], 'price'), 'single_unit_tax_price'
-    price = parse_number(cells.get('price', {}).get('text'))
-    if price == Decimal(1) and 'quantity' in cells:
-        return (row['row_id'], 'quantity'), 'single_unit_tax_quantity'
-    return None, 'tax_amount_not_directly_printed_as_cell'
-
-
-def seed_printed_vat(rows, book):
-    source, reason = vat_source(rows)
-    if source is None:
-        return {'source':None, 'status':reason}
-    rid, field = source
-    row = next(r for r in rows if r['row_id'] == rid)
-    cell = row['cells'][field]
-    book.add_vat(cell.get('text'), cell.get('confidence'),
-                 'vat_row_primary_'+field, row_id=rid, field=field,
-                 model=cell.get('model_id','v5_cyrillic_mobile'))
-    return {'source':{'row_id':rid,'field':field}, 'status':'observed_vat_row'}
+from .vat_witness import vat_source, seed_printed_vat, observed_vat_text
 
 
 def _prep(image, mode):

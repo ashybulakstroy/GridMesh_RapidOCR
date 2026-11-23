@@ -1,0 +1,16 @@
+Benchmark2 — installation from any Windows drive
+
+1. Extract ZIP keeping the Benchmark2 folder, for example:
+   D:\OCR_Benchmark2\Benchmark2\
+2. Double click Benchmark2\INSTALL_AND_RUN.bat
+3. Original project used READ-ONLY:
+   C:\Work\Projects\Prj_18_OCR_2\
+4. Separate Python 3.14 .venv and OCR results are created in this Benchmark2 folder.
+5. To restart after setup: double click run_benchmark2.bat
+
+Do not copy a pre-existing .venv between drive locations.
+For relocating an already installed Benchmark2, delete only Benchmark2\.venv
+and reinstall with INSTALL_AND_RUN.bat.
+
+The installer downloads packages and, when necessary, model weights and JPEGs.
+The benchmark tests Cyrillic recognition models only.
