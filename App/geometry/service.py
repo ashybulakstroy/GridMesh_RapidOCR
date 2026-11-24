@@ -148,70 +148,78 @@ def _repair_extreme_horizontal_curves(image, data):
         return {**data,'horizontal':rules},repaired,unresolved
     return data,0,unresolved
 
-def build_grid(image, *, rectify=False, phase=None):
+def _build_grid_core(image, *, rectify=False, phase=None, pre_detected=None):
     _debug=get_debug()
     _grid_t0=perf_counter() if _debug is not None else None
-    data, report = detect_for_lab(image)
-    if _debug is not None:
-        _debug.add_geometry('autogrid_gridrefine_v3',(perf_counter()-_grid_t0)*1000,
-                            {'found':data is not None,'status':report.get('status'),
-                             'reason':report.get('reason'),
-                             'detector_status':report.get('autogrid',{}).get('status'),
-                             'horizontal_boundaries':report.get('autogrid',{}).get('horizontal_boundaries'),
-                             'vertical_boundaries':report.get('autogrid',{}).get('vertical_boundaries'),
-                             'roi':report.get('autogrid',{}).get('auto_roi')})
-    automatic_data = data
-    recovered_horizontal = 0
-    method = 'AutoGrid GridRefine V3'
-    auto_vertical_count = len(data['vertical']) if data is not None else None
-    # Reject grids that Grid Mesh cannot represent before choosing a detector.
-    # In particular, near-duplicate false lines can pass the detector's looser
-    # spacing threshold while violating the mesh's minimum row spacing.
-    invalid_spacing = data is not None and (any(np.diff([v.position for v in data['vertical']]) < 6) or
-                                               any(np.diff([h.position for h in data['horizontal']]) < 5))
-    if invalid_spacing:
-        data = None
-    if data is None or not 5 <= len(data['vertical']) <= 9 or len(data['horizontal']) < 3:
-        _physical_t0=perf_counter() if _debug is not None else None
+    if pre_detected is not None:
+        data, report = pre_detected
+        automatic_data = None
+        recovered_horizontal = 0
+        method = 'Physical Grid Graph V3'
+        auto_vertical_count = None
+        invalid_spacing = False
+    else:
+        data, report = detect_for_lab(image)
         if _debug is not None:
-            _debug.add_geometry('geometry_fallback_trigger',0,
-                {'reason':'invalid_spacing' if invalid_spacing else
-                          'autogrid_rejected' if data is None else 'insufficient_boundaries',
-                 'autogrid_reason':report.get('reason'),
-                 'detector_status':report.get('autogrid',{}).get('status')})
-        physical, physical_report = detect_physical_graph(image)
-        if _debug is not None:
-            _debug.add_geometry('physical_grid_graph_v3',(perf_counter()-_physical_t0)*1000,
-                                {'found':physical is not None,'status':physical_report.get('status'),
-                                 'selection':physical_report.get('selection'),
-                                 'reason':physical_report.get('reason'),
-                                 'v2_status':physical_report.get('v2_status'),
-                                 'horizontal_candidates':physical_report.get('horizontal_candidates'),
-                                 'vertical_candidates':physical_report.get('vertical_candidates'),
-                                 'local_hypotheses':physical_report.get('local_hypotheses')})
-        # Retain the more complete horizontal observations only when the
-        # independent graph confirms all four detected vertical boundaries
-        # and supplies exactly one additional physical boundary.
-        if data is not None and physical is not None and len(data['vertical']) == 4 and len(physical['vertical']) == 5 and len(data['horizontal']) >= 3:
-            observed = [v.position for v in data['vertical']]
-            graph = [v.position for v in physical['vertical']]
-            tolerance = max(3.0, image.shape[1]*.008)
-            matches = [min(range(len(graph)), key=lambda i: abs(graph[i]-x)) for x in observed]
-            # Completing a column must not discard additional source-confirmed
-            # row boundaries found by the physical detector (including header).
-            # Otherwise two products can become the apparent header band.
-            if (len(set(matches)) == 4 and all(abs(graph[i]-x) <= tolerance for x,i in zip(observed,matches))
-                    and len(data['horizontal']) >= len(physical['horizontal'])):
-                missing = next(i for i in range(5) if i not in matches)
-                vertical = list(physical['vertical'])
-                vertical[missing] = _refine_vertical_by_ink(image, vertical[missing], data['horizontal'])
-                data = {**data, 'vertical': vertical}
-                report = {**report, 'vertical_completion': physical_report}
-                method = 'AutoGrid GridRefine V3 + Physical Grid Graph V3'
+            _debug.add_geometry('autogrid_gridrefine_v3',(perf_counter()-_grid_t0)*1000,
+                                {'found':data is not None,'status':report.get('status'),
+                                 'reason':report.get('reason'),
+                                 'detector_status':report.get('autogrid',{}).get('status'),
+                                 'horizontal_boundaries':report.get('autogrid',{}).get('horizontal_boundaries'),
+                                 'vertical_boundaries':report.get('autogrid',{}).get('vertical_boundaries'),
+                                 'roi':report.get('autogrid',{}).get('auto_roi')})
+        automatic_data = data
+        recovered_horizontal = 0
+        method = 'AutoGrid GridRefine V3'
+        auto_vertical_count = len(data['vertical']) if data is not None else None
+        # Reject grids that Grid Mesh cannot represent before choosing a detector.
+        # In particular, near-duplicate false lines can pass the detector's looser
+        # spacing threshold while violating the mesh's minimum row spacing.
+        invalid_spacing = data is not None and (any(np.diff([v.position for v in data['vertical']]) < 6) or
+                                                   any(np.diff([h.position for h in data['horizontal']]) < 5))
+        if invalid_spacing:
+            data = None
+        if data is None or not 5 <= len(data['vertical']) <= 9 or len(data['horizontal']) < 3:
+            _physical_t0=perf_counter() if _debug is not None else None
+            if _debug is not None:
+                _debug.add_geometry('geometry_fallback_trigger',0,
+                    {'reason':'invalid_spacing' if invalid_spacing else
+                              'autogrid_rejected' if data is None else 'insufficient_boundaries',
+                     'autogrid_reason':report.get('reason'),
+                     'detector_status':report.get('autogrid',{}).get('status')})
+            physical, physical_report = detect_physical_graph(image)
+            if _debug is not None:
+                _debug.add_geometry('physical_grid_graph_v3',(perf_counter()-_physical_t0)*1000,
+                                    {'found':physical is not None,'status':physical_report.get('status'),
+                                     'selection':physical_report.get('selection'),
+                                     'reason':physical_report.get('reason'),
+                                     'v2_status':physical_report.get('v2_status'),
+                                     'horizontal_candidates':physical_report.get('horizontal_candidates'),
+                                     'vertical_candidates':physical_report.get('vertical_candidates'),
+                                     'local_hypotheses':physical_report.get('local_hypotheses')})
+            # Retain the more complete horizontal observations only when the
+            # independent graph confirms all four detected vertical boundaries
+            # and supplies exactly one additional physical boundary.
+            if data is not None and physical is not None and len(data['vertical']) == 4 and len(physical['vertical']) == 5 and len(data['horizontal']) >= 3:
+                observed = [v.position for v in data['vertical']]
+                graph = [v.position for v in physical['vertical']]
+                tolerance = max(3.0, image.shape[1]*.008)
+                matches = [min(range(len(graph)), key=lambda i: abs(graph[i]-x)) for x in observed]
+                # Completing a column must not discard additional source-confirmed
+                # row boundaries found by the physical detector (including header).
+                # Otherwise two products can become the apparent header band.
+                if (len(set(matches)) == 4 and all(abs(graph[i]-x) <= tolerance for x,i in zip(observed,matches))
+                        and len(data['horizontal']) >= len(physical['horizontal'])):
+                    missing = next(i for i in range(5) if i not in matches)
+                    vertical = list(physical['vertical'])
+                    vertical[missing] = _refine_vertical_by_ink(image, vertical[missing], data['horizontal'])
+                    data = {**data, 'vertical': vertical}
+                    report = {**report, 'vertical_completion': physical_report}
+                    method = 'AutoGrid GridRefine V3 + Physical Grid Graph V3'
+                else:
+                    data, report, method = physical, physical_report, 'Physical Grid Graph V3'
             else:
                 data, report, method = physical, physical_report, 'Physical Grid Graph V3'
-        else:
-            data, report, method = physical, physical_report, 'Physical Grid Graph V3'
     if data is not None and method == 'Physical Grid Graph V3':
         _ridge_t0=perf_counter() if _debug is not None else None
         data, recovered_horizontal = _recover_observed_horizontal(image, data, automatic_data)
@@ -312,6 +320,56 @@ def build_grid(image, *, rectify=False, phase=None):
                              'ridge_refined_horizontal': sum(edge.get('refinement') == 'nearby_source_ridge_3px' for edge in report.get('edges', [])),
                              'rectification': result.method, 'safety': check, 'warnings': warnings}
 
+
+
+# LOCALGRID_ROI_INTEGRATION_V1
+def build_grid(image, *, rectify=False, phase=None):
+    """Fast local ROI path with a production-safe full-image fallback."""
+    from ..config import setting
+    if setting('OCR_LOCALGRID_MODE', 'on').strip().lower() != 'on':
+        return _build_grid_core(image, rectify=rectify, phase=phase)
+    from .local_grid_runtime import try_local_grid
+    from time import perf_counter as _local_clock
+    start = _local_clock()
+    stats = None
+    try:
+        graph, report, stats = try_local_grid(image)
+    except Exception as exc:
+        stats = {'status':'exception', 'reason':f'{type(exc).__name__}: {exc}',
+                  'fallback_to_full':True}
+        graph = None
+        report = None
+    debug = get_debug()
+    if graph is not None:
+        try:
+            result, overlay, geometry = _build_grid_core(
+                image, rectify=rectify, phase=phase, pre_detected=(graph,report))
+            safety = geometry.get('safety') or {}
+            if safety.get('status') != 'MEASURED':
+                raise ValueError('local mesh safety was not measured')
+            if (safety.get('folded_fraction', 0) > 0 or
+                    safety.get('source_valid_fraction', 1) < .995 or
+                    geometry.get('unresolved_extreme_horizontal', 0) > 0):
+                raise ValueError('local mesh failed safety/geometry checks')
+            geometry['method'] = 'LocalGrid PaperGuard V2 · Physical V2'
+            geometry['local_grid_roi'] = stats
+            if debug is not None and stats is not None:
+                debug.add_geometry('local_grid_roi', stats.get('total_ms',(_local_clock()-start)*1000), stats)
+            return result, overlay, geometry
+        except Exception as exc:
+            # A valid detected grid might still fail mesh/safety construction.
+            # Never fail a production job merely because the optional path failed.
+            if stats is not None:
+                stats['fallback_to_full'] = True
+                stats['postprocess_error'] = f'{type(exc).__name__}: {exc}'
+    if stats is not None:
+        stats['status'] = 'fallback_to_smart'
+        stats['fallback_to_full'] = True
+    if debug is not None and stats is not None:
+        debug.add_geometry('local_grid_roi', stats.get('total_ms',(_local_clock()-start)*1000), stats)
+    result, overlay, geometry = _build_grid_core(image, rectify=rectify, phase=phase)
+    geometry['local_grid_roi'] = stats
+    return result, overlay, geometry
 
 def cell_polygon(result, row, column):
     """Sample the four observed source curves bounding a single grid cell."""

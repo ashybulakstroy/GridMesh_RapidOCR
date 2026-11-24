@@ -15,7 +15,7 @@ class GeometryDetailedDebugTests(unittest.TestCase):
         if not path.is_file():
             self.skipTest('Local user receipt is not present')
         image=cv2.imread(str(path))
-        with patch.dict('os.environ',{'LOG_LEVEL':'DEBUG'}):
+        with patch.dict('os.environ',{'LOG_LEVEL':'DEBUG','OCR_LOCALGRID_MODE':'off'}):
             token=activate_telemetry('geometry-debug-test')
             try:
                 debug=get_debug()
@@ -31,7 +31,7 @@ class GeometryDetailedDebugTests(unittest.TestCase):
         self.assertIn('physical_v3_baseline_v2',by_name)
         self.assertIn('physical_v3_score_hypotheses',by_name)
         self.assertEqual({x['detail']['scale'] for x in steps if x['step']=='physical_v3_scale_line_detection'}, {1.0,1.5})
-        with patch.dict('os.environ',{'LOG_LEVEL':'INFO'}):
+        with patch.dict('os.environ',{'LOG_LEVEL':'INFO','OCR_LOCALGRID_MODE':'off'}):
             token=activate_telemetry('geometry-info-test')
             try:
                 self.assertIsNone(get_debug())
