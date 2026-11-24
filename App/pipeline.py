@@ -41,6 +41,13 @@ def number(text):
     return parse_number(text)
 
 
+def has_multiple_consistent_footer_values(matrix):
+    """Only flag distinct totals that belong to complete matrix solutions."""
+    values = {number(solution.get('footer')) for solution in matrix.get('solutions', [])}
+    values.discard(None)
+    return len(values) > 1
+
+
 def log_budget_events(log, stats, stage):
     if not stats:
         return
@@ -816,7 +823,7 @@ def _process(data, profile, job_dir, rectify):
                 'matrix_nodes':numeric_matrix['nodes_visited'],
                 'matrix_bounded':numeric_matrix['search_truncated'],
                 'model_ensemble':model_pool.stats()}
-            if numeric_matrix['footer_ambiguous']:
+            if has_multiple_consistent_footer_values(numeric_matrix):
                 geometry['warnings'].append('OCR печатного итога дал разные варианты; альтернативы сохранены для анализа.')
             if numeric_matrix['vat_ambiguous']:
                 geometry['warnings'].append('OCR напечатанного НДС дал разные значения; альтернативы сохранены для анализа.')
