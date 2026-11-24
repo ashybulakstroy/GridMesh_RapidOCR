@@ -25,10 +25,10 @@ def auto_apply_consensus(rows, book, matrix, current_total, *, enabled=True):
             'reasons':[],'printed_total':current_total,'review_required':bool(matrix.get('review_required'))}
     if not enabled:
         report['status']='disabled';return report
-    if matrix.get('status') not in ('unique_math_match','ambiguous') or matrix.get('search_truncated'):
+    if matrix.get('status') != 'unique_math_match' or matrix.get('search_truncated'):
         report['status']='unresolved_preserved';report['reasons'].append('matrix_not_uniquely_confirmed')
         return report
-    if not matrix.get('solutions'):
+    if len(matrix.get('solutions') or []) != 1:
         report['status']='unresolved_preserved';report['reasons'].append('solution_count_not_one')
         return report
     selection=matrix['solutions'][0]
@@ -47,20 +47,27 @@ def auto_apply_consensus(rows, book, matrix, current_total, *, enabled=True):
             report['reasons'].append('user_locked');continue
         observed=book.cells.get(book.key(move['row_id'],move['field']),{}).get('observations',[])
         support=_support(observed,move['to'],0)
-        checks.append((move,row,cell,support))
+        evidence=[{'model':obs.get('model'), 'path':obs.get('path'),
+                   'text':obs.get('text'), 'confidence':obs.get('confidence')}
+                  for obs in observed if obs.get('number')==move['to']]
+        if not evidence:
+            report['reasons'].append('no_matching_ocr_evidence')
+        checks.append((move,row,cell,support,evidence))
     footer_support=_support(book.footer,total_chosen,0)
     if report['reasons'] or len(checks)!=len(proposed):
         report['status']='not_enough_independent_evidence';return report
-    for move,row,cell,support in checks:
+    for move,row,cell,support,evidence in checks:
         before=cell['text']
         cell['text']=move['to']
-        cell['confidence']=max(support.values(), default=0.0)
+        cell['confidence']=max(support.values(), default=None)
         cell['strategy']='e4_unique_matrix'
         cell['auto_corrected']=True
         cell['auto_corrected_from']=before
         cell['auto_model_votes']=support
+        cell['auto_ocr_evidence']=evidence
         report['changes'].append({'row_id':move['row_id'],'field':move['field'],
-                                  'before':before,'after':move['to'],'models':support})
+                                  'before':before,'after':move['to'],'models':support,
+                                  'ocr_evidence':evidence})
     if total_changed:
         report['changes'].append({'row_id':None,'field':'receipt_total',
                                   'before':current_total,'after':total_chosen,

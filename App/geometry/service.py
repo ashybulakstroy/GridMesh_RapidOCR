@@ -153,10 +153,11 @@ def _build_grid_core(image, *, rectify=False, phase=None, pre_detected=None):
     _grid_t0=perf_counter() if _debug is not None else None
     if pre_detected is not None:
         data, report = pre_detected
-        automatic_data = None
+        is_local_autogrid = (report or {}).get('selection') == 'local_roi_autogrid_paperguard_v4'
+        automatic_data = data if is_local_autogrid else None
         recovered_horizontal = 0
-        method = 'Physical Grid Graph V3'
-        auto_vertical_count = None
+        method = 'AutoGrid GridRefine V3' if is_local_autogrid else 'Physical Grid Graph V3'
+        auto_vertical_count = len(data['vertical']) if is_local_autogrid else None
         invalid_spacing = False
     else:
         data, report = detect_for_lab(image)
@@ -351,7 +352,7 @@ def build_grid(image, *, rectify=False, phase=None):
                     safety.get('source_valid_fraction', 1) < .995 or
                     geometry.get('unresolved_extreme_horizontal', 0) > 0):
                 raise ValueError('local mesh failed safety/geometry checks')
-            geometry['method'] = 'LocalGrid PaperGuard V3 · Physical V2'
+            geometry['method'] = 'LocalGrid PaperGuard V4 · AutoGrid on Fast ROI'
             geometry['local_grid_roi'] = stats
             if debug is not None and stats is not None:
                 debug.add_geometry('local_grid_roi', stats.get('total_ms',(_local_clock()-start)*1000), stats)

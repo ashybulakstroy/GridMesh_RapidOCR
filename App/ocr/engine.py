@@ -161,7 +161,9 @@ def read_full(image, *, footer_mode=False, cell_mode=False):
         text, score = str(text), float(score)
         # A separate English recognizer is used only for Latin-only text
         # segments; it can never overwrite a segment containing Cyrillic.
-        if len(re.findall(r'[A-Za-z]', text)) >= 2 and not re.search(r'[А-Яа-яЁё]', text):
+        if (setting('OCR_NAME_ENGLISH_FALLBACK', '0') == '1' and
+                len(re.findall(r'[A-Za-z]', text)) >= 2 and
+                not re.search(r'[А-Яа-яЁё]', text)):
             x0, y0 = np.floor(np.min(box, axis=0)).astype(int)
             x1, y1 = np.ceil(np.max(box, axis=0)).astype(int)
             crop = image[max(0,y0):min(image.shape[0],y1+1), max(0,x0):min(image.shape[1],x1+1)]
@@ -245,7 +247,9 @@ def _read_observed_name_lines(image, row_id, column_id, offset):
         if not recognized.txts or recognized.scores[0] < .60 or not re.search(r'\w',recognized.txts[0]):
             return None
         text, score = str(recognized.txts[0]), float(recognized.scores[0])
-        if len(re.findall(r'[A-Za-z]',text)) >= 2 and not re.search(r'[А-Яа-яЁё]',text):
+        if (setting('OCR_NAME_ENGLISH_FALLBACK', '0') == '1' and
+                len(re.findall(r'[A-Za-z]',text)) >= 2 and
+                not re.search(r'[А-Яа-яЁё]',text)):
             with _lock:
                 alternative = _run_english_rec(crop)
             if alternative.txts and alternative.scores[0] > score+.03 and re.search(r'[A-Za-z]',alternative.txts[0]):
@@ -260,8 +264,15 @@ def _read_observed_name_lines(image, row_id, column_id, offset):
 
 
 def read_cell(image, row_id, column_id, offset, *, force_single=False):
-    model = ('v6_tiny_cyrillic_optional' if column_id == 'name' else
-             'v6_tiny_official' if column_id in ('quantity','price') else 'v5_cyrillic_mobile')
+    # Experiment: one Cyrillic model for all three primary table fields.
+    # Set OCR_UNIFIED_TINY_ENABLE=0 to compare with the previous primary routing.
+    model = ('v6_tiny_cyrillic_optional'
+             if column_id == 'name' or (
+                 column_id in ('quantity', 'price') and
+                 setting('OCR_UNIFIED_TINY_ENABLE', '1') == '1')
+             else 'v6_tiny_official'
+             if column_id in ('quantity', 'price')
+             else 'v5_cyrillic_mobile')
     token = _NAME_MODEL.set(model)
     last_token = _LAST_REC_MODEL.set(None)
     try:

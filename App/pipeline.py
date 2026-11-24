@@ -22,6 +22,7 @@ from .ocr.price_candidate import prepare_price_candidate
 from .ocr.p1_recovery import recover_invalid_and_rows, recover_total_mismatch
 from .ocr.p1_double_retry import retry_suspect_cells
 from .ocr.e5_tesseract import recover_with_tesseract
+from .ocr.e4_math_target import select_math_targets
 from .ocr.experiment_matrix import CandidateBook, solve_matrix
 from .ocr.experiment_original import OriginalNumericCache
 from .ocr.experiment_footer import scan_footer
@@ -691,6 +692,51 @@ def _process(data, profile, job_dir, rectify):
             numeric_matrix = solve_matrix(rows, book, vat_rate,
                 max_nodes=positive_int('OCR_MATRIX_MAX_NODES',100000))
             initial_matrix_status = numeric_matrix['status']
+            # E4_MATH_TARGET_EXPERIMENT_V1: bounded, read-only location prediction.
+            # Inferred numbers NEVER enter CandidateBook as observations.
+            fast_e5 = {'status':'not_needed', 'details':[], 'candidates':[]}
+            fast_targets = []
+            if (setting('OCR_E4_FAST_MATH_E5','1') == '1' and
+                    numeric_matrix['status'] not in ('unique_math_match', 'ambiguous') and
+                    not numeric_matrix.get('search_truncated')):
+                fast_targets = select_math_targets(
+                    rows, total, book,
+                    max_cells=positive_int('OCR_E4_FAST_MATH_E5_MAX_CELLS',2))
+                if fast_targets:
+                    profile.phase('E4 FAST: адресная проверка Tesseract KAZ')
+                    _fast_e5_started = time.perf_counter()
+                    try:
+                        fast_e5 = recover_with_tesseract(
+                            rows, crop_map, {}, accept_invalid=False,
+                            force_keys=[(x['row_id'],x['field']) for x in fast_targets],
+                            max_cells=len(fast_targets))
+                    except Exception as exc:
+                        fast_e5 = {'status':'error', 'details':[], 'candidates':[],
+                                   'error':f'{type(exc).__name__}: {exc}'}
+                    fast_e5['wall_ms'] = round((time.perf_counter()-_fast_e5_started)*1000,3)
+                    for candidate in fast_e5.get('candidates', []):
+                        book.add(candidate['row_id'],candidate['field'],candidate['text'],None,
+                                 'e5_math_target_'+candidate['variant'],model='tesseract_kaz')
+                    if fast_e5.get('candidates'):
+                        numeric_matrix = solve_matrix(
+                            rows, book, vat_rate,
+                            max_nodes=positive_int('OCR_MATRIX_MAX_NODES',100000))
+                    processing_log.append({'type':'operation',
+                        'stage':'E4 FAST адресная E5',
+                        'message':'Адресная E5: '
+                            +str([(x['row_id'],x['field']) for x in fast_targets])
+                            +'; результат '+str(numeric_matrix['status']),
+                        'targets':fast_targets, 'e5_status':fast_e5.get('status'),
+                        'elapsed_ms':fast_e5.get('wall_ms'),
+                        'matrix_before':initial_matrix_status,
+                        'matrix_after':numeric_matrix['status']})
+            geometry['e4_math_target'] = {
+                'enabled':setting('OCR_E4_FAST_MATH_E5','1') == '1',
+                'targets':fast_targets,'e5_status':fast_e5.get('status'),
+                'elapsed_ms':fast_e5.get('wall_ms',0),
+                'matrix_before':initial_matrix_status,
+                'matrix_after':numeric_matrix['status']}
+            geometry['e5_tesseract']['early_math_target'] = fast_e5
             original_roi_experiment = {'cache_cells':0,'cache_bytes':0,'rec_calls':0,
                                        'skipped':'matrix_resolved'}
             model_pool = ExperimentModelPool()
@@ -748,6 +794,7 @@ def _process(data, profile, job_dir, rectify):
             # E4 may only now have observed letters/symbols in a numeric cell.
             # Give those cells the remaining E5 budget before the final solve.
             e5_seen = {(d['row_id'], d['column_id']) for d in e5_result['details']}
+            e5_seen.update((d['row_id'],d['column_id']) for d in fast_e5.get('details',[]))
             try:
                 late_e5 = recover_with_tesseract(
                     rows, crop_map, {}, book=book, exclude_keys=e5_seen,
@@ -800,6 +847,12 @@ def _process(data, profile, job_dir, rectify):
                 processing_log.append({'type':'operation','stage':'E4 автоматическая сверка',
                     'message':'Выбрана единственная арифметически согласованная комбинация: '
                               + str(len(numeric_auto_corrections['changes'])) + ' исправлений.'})
+            if (geometry['e4_math_target']['matrix_after'] == 'unique_math_match' and
+                    original_roi_experiment.get('skipped') == 'matrix_resolved'):
+                numeric_matrix['candidate_scope'] = 'early_targeted_without_full_source_scan'
+                numeric_matrix['candidate_scope_note'] = (
+                    'Единственное решение относится к собранным вариантам; '
+                    'полный поиск альтернатив по исходным пикселям не выполнялся.')
             numeric_matrix['candidate_collection'] = {'v5_calls':candidate_calls, 'errors':candidate_failures}
             numeric_matrix['initial_status'] = initial_matrix_status
             numeric_matrix['fallback_used'] = original_roi_experiment.get('skipped') != 'matrix_resolved'

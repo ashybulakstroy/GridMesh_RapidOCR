@@ -142,7 +142,9 @@ def test_blank_image_does_not_fabricate_grid():
     with pytest.raises(ValueError, match='сетк'):
         process(encoded.tobytes())
 
-def test_cyrillic_latin_and_mixed_model():
+def test_cyrillic_latin_and_mixed_model(monkeypatch):
+    # English OCR is optional: keep this test as an explicit opt-in regression.
+    monkeypatch.setenv('OCR_NAME_ENGLISH_FALLBACK','1')
     image = cv2.imread(str(HERE/'mixed_text.png'))
     text = ' '.join(r['text'] for r in read_full(image)).casefold()
     for word in ('клей', 'мдф', '400ml', 'ga065b', 'щетка', 'stayer', 'universal', 'труба', 'ppr', 'jakko'):

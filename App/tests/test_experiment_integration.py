@@ -121,8 +121,8 @@ def test_ambiguous_matrix_ranks_all_solutions_and_warns():
     assert len(matrix['solutions'])==3
     assert matrix['solutions'][0]['footer']=='300'
     result=auto_apply_consensus(rows,book,matrix,'100')
-    assert result['status']=='applied' and result['review_required']
-    assert rows[0]['cells']['price']['text']=='300'
+    assert result['status']=='unresolved_preserved' and result['review_required']
+    assert rows[0]['cells']['price']['text']=='100'
     bounded=solve_matrix(rows,book,16,max_nodes=1)
     assert auto_apply_consensus(rows,book,bounded,'300')['status']=='unresolved_preserved'
 

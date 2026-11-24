@@ -53,7 +53,7 @@ def read_tesseract(image, exe, *, row_id, field, variant, whitelist):
 
 
 def recover_with_tesseract(rows, crops, recovery, *, max_cells=3, book=None,
-                           exclude_keys=(), accept_invalid=True):
+                           exclude_keys=(), accept_invalid=True, force_keys=()):
     """Try invalid fields and conflicting OCR readings; keep conflicts for review."""
     if setting('OCR_E5_TESSERACT', '1') != '1':
         return {'status':'disabled', 'details':[], 'candidates':[]}
@@ -85,6 +85,13 @@ def recover_with_tesseract(rows, crops, recovery, *, max_cells=3, book=None,
                    obs.get('model') != 'tesseract_kaz'
                    for obs in bucket.get('observations', [])):
                 targets.setdefault(key, (1, row, key[1]))
+    # E4_MATH_TARGET_EXPERIMENT_V1: operator-selected OCR targets are not automatic edits.
+    rows_by_id_forced = {r['row_id']:r for r in rows}
+    for key in force_keys:
+        key = tuple(key)
+        row = rows_by_id_forced.get(key[0])
+        if row and key in crops and key[1] in row.get('cells', {}):
+            targets[key] = (-1, row, key[1])
     for key in exclude_keys:
         targets.pop(key, None)
     if max_cells <= 0:
