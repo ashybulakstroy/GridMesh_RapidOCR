@@ -5,6 +5,8 @@ No OCR, reference coordinates, receipt ID, or expected row count is accepted.
 """
 import cv2,numpy as np
 from itertools import combinations
+from time import perf_counter
+from ...ocr.debug_performance import get_debug
 from .detection import Rule
 from .physical_grid_graph import connected_fragments,graph_verticals
 from .physical_grid_graph_local import (detect_physical_graph as v2,ridge_response,
@@ -14,12 +16,27 @@ from .algorithms import intersection
 
 
 def multiscale_segments(gray):
-    H,W=gray.shape;parts={'h':[],'v':[]}
+    H,W=gray.shape;parts={'h':[],'v':[]}; debug=get_debug()
     for scale in [1.,1.5]:
+        started=perf_counter() if debug else None
         sized=cv2.resize(gray,None,fx=scale,fy=scale,interpolation=cv2.INTER_CUBIC)
+        if debug:
+            debug.add_geometry('physical_v3_scale_resize',(perf_counter()-started)*1000,
+                               {'scale':scale,'shape_hw':list(sized.shape)})
+            started=perf_counter()
         sized=cv2.createCLAHE(clipLimit=2.,tileGridSize=(8,8)).apply(sized)
+        if debug:
+            debug.add_geometry('physical_v3_scale_clahe',(perf_counter()-started)*1000,{'scale':scale})
+            started=perf_counter()
         found=cv2.createLineSegmentDetector(cv2.LSD_REFINE_STD).detect(sized)[0]
-        if found is None:continue
+        if debug:
+            debug.add_geometry('physical_v3_scale_line_detection',(perf_counter()-started)*1000,
+                               {'scale':scale,'raw_segments':0 if found is None else len(found)})
+            started=perf_counter()
+            before_h,before_v=len(parts['h']),len(parts['v'])
+        if found is None:
+            if debug:debug.add_geometry('physical_v3_scale_classify',0,{'scale':scale,'horizontal':0,'vertical':0})
+            continue
         for item in found.reshape(-1,4):
             x0,y0,x1,y1=(item+.5)/scale-.5;dx=x1-x0;dy=y1-y0
             if abs(dx)>=max(18,W*.025) and abs(dy)<=abs(dx)*.35:
@@ -31,6 +48,10 @@ def multiscale_segments(gray):
                 if y1<y0:x0,y0,x1,y1=x1,y1,x0,y0
                 ref=x0+(H/2-y0)*(x1-x0)/max(y1-y0,1)
                 parts['v'].append((float(ref),tuple(map(float,(y0,x0,y1,x1))),float(y1-y0)))
+        if debug:
+            debug.add_geometry('physical_v3_scale_classify',(perf_counter()-started)*1000,
+                               {'scale':scale,'horizontal':len(parts['h'])-before_h,
+                                'vertical':len(parts['v'])-before_v})
     return parts
 
 
@@ -137,14 +158,40 @@ def _complete_short_grid(data, report):
 
 
 def detect_physical_graph(image):
+    debug=get_debug(); started=perf_counter() if debug else None
     gray=cv2.cvtColor(image,cv2.COLOR_BGR2GRAY);H,W=gray.shape
+    if debug:
+        debug.add_geometry('physical_v3_grayscale',(perf_counter()-started)*1000,{'shape_hw':[H,W]})
+        started=perf_counter()
     response,dark=ridge_response(gray)
+    if debug:
+        debug.add_geometry('physical_v3_ridge_response',(perf_counter()-started)*1000)
+        started=perf_counter()
     baseline,previous=v2(image, ridge=(response,dark))
+    if debug:
+        debug.add_geometry('physical_v3_baseline_v2',(perf_counter()-started)*1000,
+                           {'found':baseline is not None,'status':previous.get('status'),
+                            'reason':previous.get('reason'),
+                            'horizontal_count':len(baseline['horizontal']) if baseline is not None else 0,
+                            'vertical_count':len(baseline['vertical']) if baseline is not None else 0})
+        started=perf_counter()
     if _complete_short_grid(baseline,previous):
+        if debug:
+            debug.add_geometry('physical_v3_short_grid_decision',(perf_counter()-started)*1000,
+                               {'accepted':True,'selection':'strong_short_grid'})
         return baseline,dict(previous,version='physical_grid_graph_v3',
                              selection='strong_short_grid', v2_status=previous['status'])
+    if debug:
+        debug.add_geometry('physical_v3_short_grid_decision',(perf_counter()-started)*1000,
+                           {'accepted':False,'selection':'continue_multiscale'})
     parts=multiscale_segments(gray)
+    started=perf_counter() if debug else None
     vertical=fit_segments(parts['v'],'v',(H,W));horizontal=fit_segments(parts['h'],'h',(H,W))
+    if debug:
+        debug.add_geometry('physical_v3_fit_segments',(perf_counter()-started)*1000,
+                           {'input_horizontal':len(parts['h']),'input_vertical':len(parts['v']),
+                            'horizontal_candidates':len(horizontal),'vertical_candidates':len(vertical)})
+        started=perf_counter()
     report=dict(version='physical_grid_graph_v3',status='REJECTED',vertical_candidates=len(vertical),
         horizontal_candidates=len(horizontal),edges=[],rejected=[],v2_status=previous['status'],
         evidence_policy='unchanged pixel thresholds; new multiscale observations, no row-count prior')
@@ -185,6 +232,10 @@ def detect_physical_graph(image):
         if vv0 is not None:
             sig=tuple(round(v.position/4) for v in vv0)
             if sig not in seen:hypotheses.append(vv0);seen.add(sig)
+    if debug:
+        debug.add_geometry('physical_v3_build_hypotheses',(perf_counter()-started)*1000,
+                           {'hypotheses':len(hypotheses)})
+        started=perf_counter()
     scored=[]
     for hypothesis in hypotheses:
         vv0=junction_outer_boundaries(hypothesis,vertical,horizontal,response)
@@ -195,7 +246,14 @@ def detect_physical_graph(image):
         scored.append((count,coverage,vv0))
     vv=max(scored,key=lambda p:(p[0],p[1]))[2] if scored else None
     report['local_hypotheses']=len(hypotheses)
+    if debug:
+        debug.add_geometry('physical_v3_score_hypotheses',(perf_counter()-started)*1000,
+                           {'hypotheses':len(hypotheses),'horizontal_candidates':len(horizontal),
+                            'best_accepted_edges':max((x[0] for x in scored),default=0),
+                            'found':vv is not None})
+        started=perf_counter()
     if vv is None:
+        if debug:debug.add_geometry('physical_v3_decision',0,{'selection':'frozen_v2_fallback' if baseline is not None else 'rejected','reason':'no_evidence_backed_five_vertical_hypothesis'})
         if baseline is not None:return baseline,dict(report,status='OBSERVED_NOT_VERIFIED',selection='frozen_v2_fallback',edges=previous['edges'])
         report['reason']='no_evidence_backed_five_vertical_hypothesis';return None,report
     vv=junction_outer_boundaries(vv,vertical,horizontal,response)
@@ -211,6 +269,10 @@ def detect_physical_graph(image):
         if not any(v.domain[0]-10<=float(np.median(y))<=v.domain[1]+10 for v in vv):continue
         if ev['accepted']:accepted.append((rule,ev))
         else:report['rejected'].append(ev)
+    if debug:
+        debug.add_geometry('physical_v3_check_horizontal_evidence',(perf_counter()-started)*1000,
+                           {'candidates':len(horizontal),'accepted':len(accepted),'rejected':len(report['rejected'])})
+        started=perf_counter()
     picked=[]
     for r,e in sorted(accepted,key=lambda p:-p[1]['ink_coverage']):
         duplicate=False
@@ -226,9 +288,18 @@ def detect_physical_graph(image):
     for r,e in picked:
         if clean and np.min(r.eval(sample)-clean[-1][0].eval(sample))<4:continue
         clean.append((r,e))
+    if debug:
+        debug.add_geometry('physical_v3_deduplicate_edges',(perf_counter()-started)*1000,
+                           {'accepted':len(accepted),'unique':len(picked),'noncrossing':len(clean)})
+        started=perf_counter()
     if baseline is not None and len(clean)<=len(baseline['horizontal']):
+        if debug:debug.add_geometry('physical_v3_decision',(perf_counter()-started)*1000,{'selection':'frozen_v2_fallback','reason':'baseline_has_at_least_as_many_boundaries','multiscale_boundaries':len(clean),'baseline_boundaries':len(baseline['horizontal'])})
         return baseline,dict(report,status='OBSERVED_NOT_VERIFIED',selection='frozen_v2_fallback',edges=previous['edges'])
     report['edges']=[e for r,e in clean];report['nodes']=[dict(horizontal=j,vertical=i,point=intersection(v,r,(H,W))) for j,(r,e) in enumerate(clean) for i,v in enumerate(vv)]
-    if len(clean)<3:report['reason']='insufficient_jointly_confirmed_multiscale_edges';return None,report
+    if len(clean)<3:
+        report['reason']='insufficient_jointly_confirmed_multiscale_edges'
+        if debug:debug.add_geometry('physical_v3_decision',(perf_counter()-started)*1000,{'selection':'rejected','reason':report['reason'],'horizontal_boundaries':len(clean)})
+        return None,report
     report.update(status='OBSERVED_NOT_VERIFIED',selection='multiscale_joint_graph',horizontal=len(clean),vertical=5)
+    if debug:debug.add_geometry('physical_v3_decision',(perf_counter()-started)*1000,{'selection':report['selection'],'horizontal_boundaries':len(clean),'vertical_boundaries':5})
     return dict(vertical=vv,horizontal=[r for r,e in clean],shape=(H,W)),report

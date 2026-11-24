@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import find_peaks
+from ...ocr.debug_performance import get_debug
 
 
 @dataclass
@@ -221,16 +222,32 @@ def _recover_by_observed_vertical_rails(image, segments):
 
 def detect(image):
     """Return (overlay, JSON-serializable metrics); does not consult GT or prior ROIs."""
-    tic=perf_counter()
+    tic=perf_counter(); debug=get_debug(); step=perf_counter() if debug else None
     height,width=image.shape[:2]
     gray,segments,lsd_masks=_h_v_segments(image)
+    if debug:
+        debug.add_geometry('autogrid_line_segments',(perf_counter()-step)*1000,
+                           {'horizontal_segments':len(segments['h']),
+                            'vertical_segments':len(segments['v']),'image_hw':[height,width]})
+        step=perf_counter()
     morph_masks=_morph_masks(gray)
+    if debug:
+        debug.add_geometry('autogrid_morphology',(perf_counter()-step)*1000)
+        step=perf_counter()
     candidates=_rank_candidates(gray,lsd_masks,morph_masks)
+    if debug:
+        debug.add_geometry('autogrid_rank_candidates',(perf_counter()-step)*1000,
+                           {'candidate_count':len(candidates),
+                            'best_source':candidates[0].source if candidates else None,
+                            'best_score':round(float(candidates[0].score),2) if candidates else None})
     best=candidates[0] if candidates else None
     overlay=image.copy()
     from .fitter import fit_grid
     if best is None:
+        step=perf_counter() if debug else None
         recovered_roi, recovered_result = _recover_by_observed_vertical_rails(image, segments)
+        if debug:debug.add_geometry('autogrid_vertical_rail_recovery',(perf_counter()-step)*1000,
+                                    {'trigger':'no_roi_candidate','found':recovered_roi is not None})
         if recovered_roi is None:
             return overlay,{'status':'NO_DETECTION','auto_roi':None,
                             'horizontal_boundaries':0,'vertical_boundaries':0,
@@ -241,10 +258,19 @@ def detect(image):
     else:
         # The primary component-based ROI is unchanged for previously working
         # photos; fallback activates only on an actual rejected initial grid.
+        step=perf_counter() if debug else None
         result=fit_grid(image,best.box)
+        if debug:debug.add_geometry('autogrid_fit_grid',(perf_counter()-step)*1000,
+                                    {'status':result.get('status'),'roi':list(best.box),
+                                     'horizontal_boundaries':result.get('horizontal_boundaries'),
+                                     'vertical_boundaries':result.get('vertical_boundaries')})
         roi_fallback=False
         if result['status']!='CURVES_FITTED':
+            step=perf_counter() if debug else None
             recovered_roi, recovered_result = _recover_by_observed_vertical_rails(image, segments)
+            if debug:debug.add_geometry('autogrid_vertical_rail_recovery',(perf_counter()-step)*1000,
+                                        {'trigger':'initial_fit_rejected','initial_status':result['status'],
+                                         'found':recovered_roi is not None})
             if recovered_roi is not None:
                 best, result = recovered_roi, recovered_result
                 roi_fallback=True
@@ -261,7 +287,12 @@ def detect(image):
                       max(18,round((x1-x0)*.04)),
                       max(25,round((x1-x0)*.055))]:
             newbox=(max(0,x0-extra),y0,x1,y1)
+            step=perf_counter() if debug else None
             trial=fit_grid(image,newbox)
+            if debug:debug.add_geometry('autogrid_expand_roi_trial',(perf_counter()-step)*1000,
+                                        {'roi':list(newbox),'status':trial.get('status'),
+                                         'horizontal_boundaries':trial.get('horizontal_boundaries'),
+                                         'vertical_boundaries':trial.get('vertical_boundaries')})
             if (len(trial.get('v_positions',[]))>len(left_positions)
                     and trial['horizontal_boundaries']>=result['horizontal_boundaries']):
                 result=trial

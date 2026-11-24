@@ -154,7 +154,12 @@ def build_grid(image, *, rectify=False, phase=None):
     data, report = detect_for_lab(image)
     if _debug is not None:
         _debug.add_geometry('autogrid_gridrefine_v3',(perf_counter()-_grid_t0)*1000,
-                            {'found':data is not None})
+                            {'found':data is not None,'status':report.get('status'),
+                             'reason':report.get('reason'),
+                             'detector_status':report.get('autogrid',{}).get('status'),
+                             'horizontal_boundaries':report.get('autogrid',{}).get('horizontal_boundaries'),
+                             'vertical_boundaries':report.get('autogrid',{}).get('vertical_boundaries'),
+                             'roi':report.get('autogrid',{}).get('auto_roi')})
     automatic_data = data
     recovered_horizontal = 0
     method = 'AutoGrid GridRefine V3'
@@ -168,10 +173,22 @@ def build_grid(image, *, rectify=False, phase=None):
         data = None
     if data is None or not 5 <= len(data['vertical']) <= 9 or len(data['horizontal']) < 3:
         _physical_t0=perf_counter() if _debug is not None else None
+        if _debug is not None:
+            _debug.add_geometry('geometry_fallback_trigger',0,
+                {'reason':'invalid_spacing' if invalid_spacing else
+                          'autogrid_rejected' if data is None else 'insufficient_boundaries',
+                 'autogrid_reason':report.get('reason'),
+                 'detector_status':report.get('autogrid',{}).get('status')})
         physical, physical_report = detect_physical_graph(image)
         if _debug is not None:
             _debug.add_geometry('physical_grid_graph_v3',(perf_counter()-_physical_t0)*1000,
-                                {'found':physical is not None})
+                                {'found':physical is not None,'status':physical_report.get('status'),
+                                 'selection':physical_report.get('selection'),
+                                 'reason':physical_report.get('reason'),
+                                 'v2_status':physical_report.get('v2_status'),
+                                 'horizontal_candidates':physical_report.get('horizontal_candidates'),
+                                 'vertical_candidates':physical_report.get('vertical_candidates'),
+                                 'local_hypotheses':physical_report.get('local_hypotheses')})
         # Retain the more complete horizontal observations only when the
         # independent graph confirms all four detected vertical boundaries
         # and supplies exactly one additional physical boundary.

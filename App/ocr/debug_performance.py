@@ -261,6 +261,7 @@ class DebugPerformance:
                 'Model call times can overlap between footer/table lanes; do NOT sum for total wall time.',
                 'RecTrace excludes opaque internal detector-recognizer calls and may include shared contexts.',
                 'Only checkpoint RSS measured; not an exact memory high-water mark.',
+                'Geometry detector totals include their nested substeps; do not sum totals and substeps together.',
                 'No periodic writes: profile is saved after success or caught failure.',
                 'INFO records short Python/library issues. DEBUG additionally records call and input diagnostics.',
             ],
