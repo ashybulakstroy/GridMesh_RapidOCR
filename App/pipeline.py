@@ -16,6 +16,7 @@ from .ocr.engine import read_cell, read_full, read_line
 from .ocr.p1_batch import BatchCell, read_batches, read_cells
 from .ocr.cell_mode import read_parallel
 from .ocr.e4_adaptive_early import adaptive_collect, make_early_snapshot, compare_early_final
+from .ocr.e4_fast_gate import primary_consistency, prioritize_suspects
 from .ocr.p1_numbers import parse_number
 from .ocr.numeric_roi import crop_numeric_ink, prepare_numeric_input
 from .ocr.price_candidate import prepare_price_candidate
@@ -404,7 +405,7 @@ def _process(data, profile, job_dir, rectify):
             footer_start = time.perf_counter()
             footer_result = read_printed_footer(image, table_source_bottom(rect,xs,ys), footer_guide=footer_focus_guide)
             footer_result['footer_read_ms'] = round((time.perf_counter()-footer_start)*1000,3)
-            if e4_enabled and not adaptive_enabled:
+            if e4_enabled and not adaptive_enabled and setting('OCR_E4_FAST_GATE','1') != '1':
                 candidate_start = time.perf_counter()
                 footer_result['numeric_candidates'] = collect_v5_candidates(crop_map)
                 footer_result['candidate_read_ms'] = round((time.perf_counter()-candidate_start)*1000,3)
@@ -615,8 +616,48 @@ def _process(data, profile, job_dir, rectify):
             audit_sum = sum((Decimal(r['line_total']) for r in rows if r['line_total'] is not None), Decimal(0))
             book = CandidateBook.from_receipt(rows, primary_numeric_observations,
                                              geometry['ocr_recovery'], total, footer_attempts)
+            # MULTILINE_VAT_FAST_E4_V1: cheap proof of internal consistency first.
+            # Arithmetic is never used to CREATE OCR candidates.
+            gate = primary_consistency(rows, total, footer_attempts,
+                min_cell_conf=float(setting('OCR_E4_GATE_MIN_CELL_CONF','0.75')),
+                min_footer_conf=float(setting('OCR_E4_GATE_MIN_FOOTER_CONF','0.86')))
+            fast_matrix = None
+            skip_secondary = False
+            if gate['eligible'] and setting('OCR_E4_FAST_GATE','1') == '1':
+                seed_printed_vat(rows, book)
+                fast_matrix = solve_matrix(rows, book, vat_rate,
+                    max_nodes=positive_int('OCR_MATRIX_MAX_NODES',100000))
+                skip_secondary = (fast_matrix['status']=='unique_math_match' and
+                                  not fast_matrix.get('review_required') and
+                                  not fast_matrix.get('search_truncated') and
+                                  not fast_matrix.get('recommended_changes'))
+            geometry['e4_fast_gate'] = {
+                **gate, 'enabled':setting('OCR_E4_FAST_GATE','1') == '1',
+                'skipped_independent_v5':skip_secondary,
+                'primary_matrix_status':fast_matrix.get('status') if fast_matrix else None}
+            if skip_secondary:
+                processing_log.append({'type':'operation','stage':'E4 быстрый контроль',
+                    'message':'Основные OCR-цифры, наблюдаемый итог и матрица согласованы; '
+                              'дополнительный полный V5 не запускался.'})
+                if adaptive_enabled:
+                    # Keep the existing early-preview contract when fast checks
+                    # resolve the matrix before adaptive V5 sampling.
+                    elapsed = (time.perf_counter()-profile.start_wall)*1000
+                    snapshot = make_early_snapshot(rows, book, fast_matrix, total,
+                                                  vat_rate, elapsed, 0, job_dir.name)
+                    temp = job_dir/'e4_early_result.json.tmp'
+                    temp.write_text(json.dumps(snapshot,ensure_ascii=False,indent=2),encoding='utf-8')
+                    temp.replace(job_dir/'e4_early_result.json')
+                    adaptive_info.update(first_ready=True, first_elapsed_ms=round(elapsed,2),
+                                         probes_before_first=0, probes_used=0,
+                                         early_solver_checks=1,
+                                         first_matrix_status='unique_math_match',
+                                         adaptive_collect_ms=0)
+                    profile.publish({'e4_early_ready':True,'e4_first_result':snapshot,
+                                     'e4_background_verification':'running'})
             collected = None
-            if adaptive_enabled:
+            early_scan = None
+            if adaptive_enabled and not skip_secondary:
                 profile.phase('E4: поиск первого предварительного результата')
                 def publish_first_matrix(matrix, candidate_book, scans):
                     # This is a read-only, immutable snapshot, separate from receipt.json.
@@ -633,9 +674,15 @@ def _process(data, profile, job_dir, rectify):
                     processing_log.append({'type':'operation','stage':'E4 предварительный результат',
                         'message':f'Первый согласованный снимок сохранён через {adaptive_info["first_elapsed_ms"]:.0f} мс; полная проверка продолжается.'})
                 try:
+                    suspicious = prioritize_suspects(rows, crop_map,
+                        limit=positive_int('OCR_E4_TARGETED_MAX_PROBES',4))
                     early_scan = adaptive_collect(rows, book, crop_map, vat_rate,
                         collect_v5_candidates, publish_first_matrix,
-                        max_nodes=positive_int('OCR_E4_ADAPTIVE_MAX_NODES',2500))
+                        max_nodes=positive_int('OCR_E4_ADAPTIVE_MAX_NODES',2500),
+                        priority_keys=suspicious,
+                        max_probes=(positive_int('OCR_E4_TARGETED_MAX_PROBES',4)
+                                    if setting('OCR_E4_TARGETED_FIRST','1')=='1'
+                                    else None))
                     collected = early_scan['collected']
                     adaptive_info.update(probes_used=early_scan['probes_used'],
                         early_solver_checks=early_scan['matrix_checks'],
@@ -656,20 +703,28 @@ def _process(data, profile, job_dir, rectify):
                                                  geometry['ocr_recovery'], total, footer_attempts)
                 profile.phase('E4: полная проверка после предварительного результата')
             else:
-                collected = (parallel_footer or {}).get('numeric_candidates')
+                collected = ({'observations':[], 'errors':[], 'attempted':set()}
+                             if skip_secondary else (parallel_footer or {}).get('numeric_candidates'))
             if collected is None:
                 collected = collect_v5_candidates(crop_map)
-            # Tax rows recovered below the grid are not known to the parallel lane.
-            missing = {key:crop for key,crop in crop_map.items()
-                       if key not in collected['attempted']}
+            # A full independent sweep is a fallback, not the normal path.
+            # Stop after E4 found an eligible unique first result; remaining
+            # cells are not silently labelled as having been OCR-checked.
+            targeted_resolved = bool(early_scan and early_scan.get('early_found') and
+                                     setting('OCR_E4_TARGETED_FIRST','1')=='1')
+            geometry['e4_fast_gate']['targeted_resolved'] = targeted_resolved
+            missing = ({} if skip_secondary or targeted_resolved else
+                       {key:crop for key,crop in crop_map.items()
+                        if key not in collected['attempted']})
             if missing:
                 extra = collect_v5_candidates(missing)
                 collected['observations'].extend(extra['observations'])
                 collected['errors'].extend(extra['errors'])
                 collected['attempted'].update(extra['attempted'])
             if adaptive_enabled:
-                # The complete collector was already used for each early cell;
-                # never rescan its price/currency variants in the full pass.
+                # Some attempts may be intentionally omitted on an eligible
+                # unique partial solution; numbers reflect ACTUAL calls.
+                # Never rescan price/currency variants already observed.
                 order = {key:i for i,key in enumerate(crop_map)}
                 collected['observations'].sort(key=lambda o:order[(o['row_id'],o['field'])])
                 adaptive_info['full_v5_cells'] = len(collected['attempted'])
@@ -756,7 +811,12 @@ def _process(data, profile, job_dir, rectify):
                 footer_variant_attempts = scan_footer(
                     image, y_bottom, total, audit_sum,
                     read_line=read_line, read_full=read_full,
-                    always_check=setting('OCR_FOOTER_VERIFY_ALWAYS', '1') == '1',
+                    # A confident source OCR footer equal to the primary
+                    # mathematical total needs no further duplicate OCR.
+                    always_check=(setting('OCR_FOOTER_VERIFY_ALWAYS', '1') == '1'
+                                  and not (setting('OCR_E4_SKIP_VERIFIED_FOOTER','1') == '1'
+                                           and gate['footer_trusted']
+                                           and 'total_mismatch' not in gate['reasons'])),
                     max_probes=positive_int('OCR_FOOTER_MAX_PROBES',8),
                     model_pool=model_pool)
                 for alternative in footer_variant_attempts:
@@ -847,7 +907,17 @@ def _process(data, profile, job_dir, rectify):
                 processing_log.append({'type':'operation','stage':'E4 автоматическая сверка',
                     'message':'Выбрана единственная арифметически согласованная комбинация: '
                               + str(len(numeric_auto_corrections['changes'])) + ' исправлений.'})
-            if (geometry['e4_math_target']['matrix_after'] == 'unique_math_match' and
+            if skip_secondary:
+                numeric_matrix['candidate_scope'] = 'primary_only_fast_math'
+                numeric_matrix['candidate_scope_note'] = (
+                    'Сумма согласуется с исходным OCR, но дополнительные V5-кандидаты '
+                    'для всех ячеек не собирались; это не оптическая истина.')
+            elif targeted_resolved:
+                numeric_matrix['candidate_scope'] = 'targeted_v5_early_only'
+                numeric_matrix['candidate_scope_note'] = (
+                    'Были прочитаны только адресные V5-кандидаты. При новом конфликте '
+                    'математики или OCR применяется штатное восстановление.')
+            elif (geometry['e4_math_target']['matrix_after'] == 'unique_math_match' and
                     original_roi_experiment.get('skipped') == 'matrix_resolved'):
                 numeric_matrix['candidate_scope'] = 'early_targeted_without_full_source_scan'
                 numeric_matrix['candidate_scope_note'] = (

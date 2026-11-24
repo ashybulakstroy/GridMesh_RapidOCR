@@ -118,7 +118,7 @@ def make_early_snapshot(rows, book, matrix, total, vat_rate, elapsed_ms, scans, 
 
 
 def adaptive_collect(rows, book, crops, vat_rate, collect_one, on_first_ready,
-                     *, max_nodes=2500):
+                      *, max_nodes=2500, priority_keys=(), max_probes=None):
     """Try weakest numeric cells first; solve E4 on each NEW numeric candidate.
 
     Does not perform the full sweep after the early signal: the calling pipeline
@@ -129,6 +129,12 @@ def adaptive_collect(rows, book, crops, vat_rate, collect_one, on_first_ready,
     attempted = set()
     observations, errors = [], []
     ordered = rank_candidates(rows, crops)
+    # MULTILINE_VAT_FAST_E4_V1: examine mathematical suspects first, not all fields.
+    priority = [tuple(k) for k in priority_keys if tuple(k) in ordered]
+    ordered = list(dict.fromkeys(priority + ordered))
+    all_numeric_count = len(ordered)
+    if max_probes is not None:
+        ordered = ordered[:max(0, int(max_probes))]
     checks = 0
     first_reported = False
     last_status = 'not_run'
@@ -186,7 +192,8 @@ def adaptive_collect(rows, book, crops, vat_rate, collect_one, on_first_ready,
         'matrix_checks': checks,
         'last_matrix_status': last_status,
         'elapsed_ms': round((perf_counter() - start) * 1000, 3),
-        'total_numeric_cells': len(ordered),
+        'total_numeric_cells': all_numeric_count,
+        'targeted_max_probes': max_probes,
     }
 
 

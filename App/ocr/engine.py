@@ -291,6 +291,28 @@ def _read_cell(image, row_id, column_id, offset, *, force_single=False):
         segmented = _read_observed_name_lines(image, row_id, column_id, offset)
         if segmented is not None:
             return segmented
+    # MULTILINE_VAT_FAST_E4_V1: split observed numeric rows BEFORE whole-cell OCR.
+    # Never infer a digit from arithmetic; every joined part is actual REC text.
+    if (column_id in ('quantity', 'price', 'printed_total') and
+            setting('OCR_NUMERIC_MULTILINE_FAST', '1') == '1' and
+            not force_single and _has_separate_numeric_lines(image)):
+        from .numeric_multiline_fast import read_numeric_multiline
+        with _lock:
+            segmented_digits = read_numeric_multiline(image, _run_cyrillic_rec)
+        if segmented_digits is not None:
+            bbox = [offset[0],offset[1],offset[0]+image.shape[1],offset[1]+image.shape[0]]
+            blocks = [dict(text=part['text'], confidence=part['confidence'],
+                           bbox=[offset[0], offset[1]+part['top'],
+                                 offset[0]+image.shape[1], offset[1]+part['bottom']],
+                           cell_id=f'{row_id}-{column_id}', row_id=row_id,
+                           column_id=column_id)
+                      for part in segmented_digits['lines']]
+            return {'text':segmented_digits['text'],
+                    'confidence':segmented_digits['confidence'], 'bbox':bbox,
+                    'cell_id':f'{row_id}-{column_id}', 'row_id':row_id,
+                    'column_id':column_id, 'blocks':blocks,
+                    'strategy':'numeric_multiline_rec_only',
+                    'numeric_multiline':segmented_digits}
     if force_single or column_id != 'name' or image.shape[0] < 45 or not _has_separate_numeric_lines(image):
         with _lock:
             direct = _run_cyrillic_rec(image)

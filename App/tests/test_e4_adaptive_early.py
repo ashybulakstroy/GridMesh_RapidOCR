@@ -147,6 +147,9 @@ def test_download_early_requires_known_job_and_ready_file(tmp_path,monkeypatch):
 
 def test_real_adaptive_final_preserves_current_candidates_and_immutable_preview(monkeypatch):
     import App.pipeline as pipeline
+    # This regression exercises the full E4 sweep, not the optional fast path.
+    monkeypatch.setenv('OCR_E4_FAST_GATE','0')
+    monkeypatch.setenv('OCR_E4_TARGETED_FIRST','0')
     monkeypatch.setenv('OCR_E4_ADAPTIVE','0')
     data=(Path(__file__).parent/'fixtures/receipt_253309.jpg').read_bytes()
     baseline=pipeline.process(data)

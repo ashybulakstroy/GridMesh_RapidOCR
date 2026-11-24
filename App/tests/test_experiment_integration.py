@@ -131,6 +131,7 @@ def test_original_roi_fallback_runs_when_primary_candidate_matrix_has_no_solutio
     from pathlib import Path
     import App.pipeline as pipeline
     monkeypatch.setenv('OCR_E4_ENABLE','1')
+    monkeypatch.setenv('OCR_E4_FAST_GATE','0')
     original=pipeline.solve_matrix
     calls=[]
     def no_solution_first(*args,**kwargs):
