@@ -1,6 +1,6 @@
 """Benchmark2: 3 passes including warm-up, unmodified OCR cells, transparent diagnostics."""
 from __future__ import annotations
-import csv, datetime as dt, json, math, os, platform, statistics, sys, time, traceback
+import csv, datetime as dt, json, math, os, platform, re, statistics, sys, time, traceback
 from pathlib import Path
 from PIL import Image
 from .prepare import ROOT, BASE, prepare, sha
@@ -37,8 +37,18 @@ def canonical(s):
     # Preserve case, punctuation, Cyrillic/Latin distinction. Normalize only whitespace.
     return ' '.join(str(s).split())
 
-def metric(expected,observed):
-    a=canonical(expected);b=canonical(observed)
+def canonical_numeric(value):
+    """Compare receipt totals as amounts, accepting spaces and a zero-cent suffix."""
+    text=str(value)
+    decimal=re.search(r'[,.]\s*(\d{2})(?!\d)',text)
+    whole=text[:decimal.start()] if decimal and decimal.group(1)=='00' else text
+    return ''.join(re.findall(r'\d+',whole))
+
+def metric(expected,observed,cell_type=None):
+    if cell_type=='numeric':
+        a=canonical_numeric(expected);b=canonical_numeric(observed)
+    else:
+        a=canonical(expected);b=canonical(observed)
     dist=levenshtein(a,b)
     return {'edit_distance':dist,'exact':a==b,'cer':dist/max(1,len(a))}
 
@@ -49,22 +59,56 @@ def report_env():
     for name in names:
         try:packages[name]=md.version(name)
         except md.PackageNotFoundError:packages[name]='NOT_INSTALLED'
-    return {'platform':platform.platform(),'processor':platform.processor(),'python':sys.version,
-            'logical_cpus':os.cpu_count(),'packages':packages,'base_project':str(BASE)}
+    try:
+        import psutil
+        memory=psutil.virtual_memory()
+        ram={'total_bytes':memory.total,'total_gib':round(memory.total / 1024**3,2)}
+        physical_cpus=psutil.cpu_count(logical=False)
+    except ImportError:
+        ram=None;physical_cpus=None
+    cpu_name=platform.processor() or os.environ.get('PROCESSOR_IDENTIFIER','UNKNOWN')
+    if sys.platform == 'win32':
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,r'HARDWARE\DESCRIPTION\System\CentralProcessor\0') as key:
+                cpu_name=winreg.QueryValueEx(key,'ProcessorNameString')[0]
+        except OSError:
+            pass
+    return {'platform':platform.platform(),'cpu_model':cpu_name,'python':sys.version,
+            'logical_cpus':os.cpu_count(),'physical_cpus':physical_cpus,'ram':ram,
+            'packages':packages,'base_project':str(BASE)}
 
-def run(*,offline=False,auto_prepare=True,progress_cb=None):
+def run(*,offline=False,auto_prepare=True,progress_cb=None,model_ids=None,cell_types=None):
     try:import psutil
     except ImportError:psutil=None
     started=time.perf_counter()
-    specs=json.loads((ROOT/'config/models.json').read_text(encoding='utf-8'))
+    all_specs=json.loads((ROOT/'config/models.json').read_text(encoding='utf-8'))
     cfg=json.loads((ROOT/'config/benchmark.json').read_text(encoding='utf-8'))
-    if not all(s.get('cyrillic') for s in specs):raise ValueError('Non-Cyrillic model forbidden')
+    available_ids={s['id'] for s in all_specs}
+    if model_ids:
+        unknown=set(model_ids)-available_ids
+        if unknown:raise ValueError('Unknown model id(s): '+', '.join(sorted(unknown)))
+        specs=[s for s in all_specs if s['id'] in model_ids]
+    else:
+        specs=[s for s in all_specs if s.get('enabled_by_default',True)]
+    allowed_types={'name','label','numeric'}
+    if cell_types:
+        unknown=set(cell_types)-allowed_types
+        if unknown:raise ValueError('Unknown cell type(s): '+', '.join(sorted(unknown)))
     if int(cfg['total_passes'])!=3 or int(cfg['warmup_passes'])!=1:raise ValueError('3 passes incl 1 warmup required')
     run_id=dt.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
     dest=ROOT/'results'/run_id; dest.mkdir(parents=True,exist_ok=False)
     (ROOT/'results'/'latest.txt').write_text(run_id,encoding='utf-8')
-    samples=json.loads((ROOT/'data/samples.json').read_text(encoding='utf-8'))
-    if len(samples)!=17 or len({s['id'] for s in samples})!=17:raise ValueError('Must have 17 unique ROIs')
+    all_samples=json.loads((ROOT/'data/samples.json').read_text(encoding='utf-8'))
+    if len(all_samples)!=17 or len({s['id'] for s in all_samples})!=17:raise ValueError('Must have 17 unique ROIs')
+    samples=[s for s in all_samples if not cell_types or s['type'] in cell_types]
+    if not specs:raise ValueError('No models selected')
+    if not samples:raise ValueError('No cells selected')
+    selected_types={s['type'] for s in samples}
+    for spec in specs:
+        if spec.get('cyrillic'):continue
+        if not (spec.get('numeric_compatible') and selected_types=={'numeric'}):
+            raise ValueError(f"{spec['id']} is non-Cyrillic and may be selected only with --cell-types numeric")
     total=len(samples)*len(specs)*3
     status={'state':'preparing','started':dt.datetime.now().isoformat(timespec='seconds'),'run_id':run_id,
             'completed':0,'total':total,'percent':0,'model':'Preparing','pass':None,
@@ -86,8 +130,10 @@ def run(*,offline=False,auto_prepare=True,progress_cb=None):
             prepare(download_missing=not offline,fetch_tessdata=True)
             prepare_models(download_missing=not offline)
         manifest=json.loads((ROOT/'data/cells_manifest.json').read_text(encoding='utf-8'))
-        if [s['id'] for s in samples]!=[s['id'] for s in manifest]:
+        manifest_by_id={s['id']:s for s in json.loads((ROOT/'data/cells_manifest.json').read_text(encoding='utf-8'))}
+        if any(s['id'] not in manifest_by_id for s in samples):
             raise ValueError('Cell manifest mismatch. Run python -m benchmark2.prepare')
+        manifest=[manifest_by_id[s['id']] for s in samples]
         for s in manifest:
             if sha(ROOT/s['file'])!=s['crop_sha256']:raise ValueError('Crop SHA256 mismatch: '+s['id'])
         crops=precompute(manifest,ROOT)
@@ -96,7 +142,10 @@ def run(*,offline=False,auto_prepare=True,progress_cb=None):
         write_json(dest/'inputs.json',manifest)
         metadata={'run_id':run_id,'config':cfg,'models':specs,'environment':environment,
                   'ground_truth_approved_by_user':False,'timestamps':'local',
-                  'model_loading_excluded_from_ocr_ms':True,'passes':{'warmup':[1],'measured':[2,3]}}
+                  'model_loading_excluded_from_ocr_ms':True,'passes':{'warmup':[1],'measured':[2,3]},
+                  'selection':{'model_ids':[s['id'] for s in specs],
+                               'cell_types':sorted({s['type'] for s in samples}),
+                               'cell_count':len(samples)}}
         write_json(dest/'manifest.json',metadata)
         allrows=[];models_results=[]
         raw=dest/'raw.jsonl'
@@ -113,7 +162,8 @@ def run(*,offline=False,auto_prepare=True,progress_cb=None):
             mdl={'id':spec['id'],'name':spec['name'],'init_ms':round(load_ms,3),
                  'status':'READY' if adapter else 'UNAVAILABLE','error':load_error,
                  'model_sha256':getattr(adapter,'model_sha256',None),
-                 'model_path':getattr(adapter,'model_path',None)}
+                 'model_path':getattr(adapter,'model_path',None),
+                 'effective_parameters':getattr(adapter,'effective_parameters',None)}
             models_results.append(mdl)
             write_json(dest/'model_initialization.json',models_results)
             for pass_no in (1,2,3):
@@ -151,7 +201,12 @@ def run(*,offline=False,auto_prepare=True,progress_cb=None):
                             if psutil:
                                 row['host_cpu_percent']=round(psutil.cpu_percent(interval=None),1)
                                 row['rss_mb']=round(psutil.Process().memory_info().rss/1048576,1)
-                        if row['status']=='OK':row.update(metric(s['expected'],row['text']))
+                    if row['status']=='OK':
+                        row.update(metric(s['expected'],row['text'],s['type']))
+                        if s['type']=='numeric':
+                            row['numeric_expected']=canonical_numeric(s['expected'])
+                            row['numeric_observed']=canonical_numeric(row['text'])
+                            row['numeric_exact']=row['exact']
                     save_row(row)
                     status['completed']+=1
                     update(cpu_percent=row.get('host_cpu_percent'),
@@ -175,6 +230,7 @@ def run(*,offline=False,auto_prepare=True,progress_cb=None):
 def write_csv(path,rows):
     fields=['model_id','model_name','pass','phase','cell_id','cell_type','width_px','height_px',
             'segments','ocr_ms','cpu_ms','process_cpu_percent_one_core','host_cpu_percent','rss_mb',
-            'status','confidence','expected','text','edit_distance','exact','cer','error']
+            'status','confidence','expected','text','edit_distance','exact','cer',
+            'numeric_expected','numeric_observed','numeric_exact','error']
     with Path(path).open('w',encoding='utf-8-sig',newline='') as f:
         wr=csv.DictWriter(f,fieldnames=fields,extrasaction='ignore');wr.writeheader();wr.writerows(rows)

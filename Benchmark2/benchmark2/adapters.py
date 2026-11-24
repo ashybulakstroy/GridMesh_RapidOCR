@@ -4,6 +4,10 @@ import asyncio, hashlib, io, os, sys
 from pathlib import Path
 from PIL import Image
 
+def reportable_parameters(params):
+    """Convert RapidOCR enums to stable JSON-safe values for the run manifest."""
+    return {key: getattr(value,'value',value) for key,value in params.items()}
+
 class RapidAdapter:
     def __init__(self, spec, root, base):
         from rapidocr import RapidOCR
@@ -31,6 +35,7 @@ class RapidAdapter:
             params['Rec.lang_type']=spec['lang']
             self.model_path='RapidOCR managed cache'
             self.model_sha256=None
+        self.effective_parameters=reportable_parameters(params)
         self.engine=RapidOCR(params=params)
     def recognize(self,img):
         import numpy as np
@@ -51,6 +56,8 @@ class TesseractAdapter:
         # Input is a known text line: PSM.SINGLE_LINE is required for fair REC-only comparison.
         # No character restrictions, DPI tuning or other engine parameters.
         self.api=PyTessBaseAPI(path=str(directory),lang='rus+eng',psm=PSM.SINGLE_LINE)
+        self.effective_parameters={'language':'rus+eng','page_segmentation_mode':'SINGLE_LINE',
+                                   'tessdata_path':str(directory)}
     def recognize(self,img):
         self.api.SetImage(img)
         text=self.api.GetUTF8Text().strip()
@@ -70,6 +77,8 @@ class WindowsAdapter:
         self.engine=OcrEngine.try_create_from_language(Language(ru))
         if self.engine is None:raise RuntimeError('OcrEngine.try_create_from_language returned None')
         self.language=ru
+        self.effective_parameters={'language':ru,'engine':'Windows.Media.Ocr',
+                                   'input_encoding':'PNG in memory'}
     async def _read(self,img):
         from winrt.windows.graphics.imaging import BitmapDecoder
         from winrt.windows.storage.streams import InMemoryRandomAccessStream, DataWriter

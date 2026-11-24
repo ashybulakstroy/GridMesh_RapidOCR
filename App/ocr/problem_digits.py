@@ -7,6 +7,86 @@ import math
 from .p1_numbers import parse_number
 
 
+def _review_reasons(record, *, math_match=True):
+    """Explain recorded review triggers, without guessing why a model erred."""
+    reasons=[]
+    if record.get('reason')=='auto_corrected':
+        reasons.append('Значение было автоматически исправлено.')
+    if record.get('reason')=='vat_not_verified':
+        reasons.append('Отдельная проверка НДС не дала числового результата.')
+    cell=record.get('diagnostic_cell') or {}
+    if cell and parse_number(cell.get('text')) is None:
+        reasons.append('Выбранный текст не удалось прочитать как число.')
+    if cell.get('numeric_issue'):
+        reasons.append('Для ячейки отмечена проблема при проверке числа.')
+    if cell.get('confidence') is not None and float(cell['confidence'])<.8:
+        reasons.append('У выбранного чтения низкая уверенность OCR (меньше 0,8).')
+    if not math_match and record.get('field') not in ('receipt_total','printed_vat'):
+        reasons.append('Сумма строк не совпала с итогом чека; ячейка включена для общей проверки. Это не доказывает ошибку этой ячейки.')
+    attempts=record.get('recognition_attempts',[])
+    if any(not a.get('success',True) for a in attempts):
+        reasons.append('Одна из попыток OCR завершилась ошибкой.')
+    if any(any(float(c)<.8 for c in a.get('confidences',[])) for a in attempts):
+        reasons.append('У одной из попыток низкая уверенность OCR (меньше 0,8).')
+    if any(any(s in a.get('stage','') for s in ('retry','recovery','second_pass')) for a in attempts):
+        reasons.append('Для поля выполнялось повторное чтение или восстановление.')
+    values=set()
+    for a in attempts:
+        if a.get('success',True) and len(a.get('cells',[]))<=1:
+            for text in a.get('texts',[]):
+                value=parse_number(text)
+                if value is not None:values.add(value)
+    for obs in record.get('observations',[]):
+        value=parse_number(obs.get('number'))
+        if value is not None:values.add(value)
+    for attempt in record.get('footer_attempts',[]):
+        value=parse_number(attempt.get('total'))
+        if value is not None:values.add(value)
+    if len(values)>1:
+        reasons.append('Попытки распознавания дали разные числовые значения.')
+    if any(obs.get('number') is None for obs in record.get('observations',[])):
+        reasons.append('Одно из сохранённых наблюдений не удалось прочитать как число.')
+    return reasons or ['Поле включено в отчёт для проверки; более точная причина в записи не сохранена.']
+
+
+def render_problem_report(directory, payload, *, math_match=True):
+    """Render saved records; works with both current and older manifests."""
+    E=lambda x:html.escape(str(x))
+    page=['<!doctype html><meta charset="utf-8"><title>Цифры для проверки</title><style>body{font:16px system-ui;margin:25px}td,th{border:1px solid #ccc;padding:10px;vertical-align:top}table{border-collapse:collapse}img{max-width:400px;max-height:160px}pre{white-space:pre-wrap}figure{margin:0 0 18px}figcaption{overflow-wrap:anywhere}.reason{background:#fff6df;padding:10px}.ocr-result{display:block;font-weight:600}</style><h1>Цифры для проверки</h1><p>Попадание в отчёт означает необходимость проверки, а не обязательно ошибку распознавания.</p><p>'+E(payload.get('note',''))+'</p><p>'+E(payload.get('coordinate_note',''))+'</p><table><tr><th>Строка / поле</th><th>Результат</th><th>Фото</th><th>OCR-наблюдения</th></tr>']
+    for r in payload.get('cells',[]):
+        by_image={a.get('input_image'):a for a in r.get('recognition_attempts',[]) if a.get('input_image')}
+        pictures=''
+        for label,path in r.get('images',{}).items():
+            event=by_image.get(path)
+            result=''
+            if event:
+                texts=event.get('texts')
+                if len(event.get('cells',[]))>1:
+                    shown='Общий пакет; результаты относятся ко всему пакету: '+(', '.join(map(str,texts)) if texts else 'нет сохранённого текста')
+                else:
+                    shown=', '.join(map(str,texts)) if texts else ('Ошибка OCR' if not event.get('success',True) else 'Текст не сохранён')
+                result='<span class="ocr-result">Распознано: '+E(shown)+'</span>'
+            pictures+='<figure><img src="'+E(path)+'"><figcaption>'+E(label)+result+'</figcaption></figure>'
+        label='Печатный итог чека' if r['field']=='receipt_total' else 'Напечатанный НДС' if r['field']=='printed_vat' else f"{r['row_id']} / {r['field']}"
+        values=(f"Автоматическое исправление: {r['before']} → {r['after']}" if r['reason']=='auto_corrected'
+                else 'Отдельная проверка напечатанного НДС не дала числового результата.' if r['reason']=='vat_not_verified'
+                else f"Выбранное значение: {r.get('after')}. Требуется проверка.")
+        reasons=''.join('<li>'+E(reason)+'</li>' for reason in _review_reasons(r,math_match=math_match))
+        attempts='<h3>Последовательность распознавания</h3><table><tr><th>Попытка</th><th>Модель / этап</th><th>Время, мс</th><th>Прочитано</th></tr>'
+        for index,e in enumerate(r.get('recognition_attempts',[]),1):
+            texts=e.get('texts')
+            shown=', '.join(map(str,texts)) if texts else ('Ошибка OCR' if not e.get('success',True) else 'Текст не сохранён')
+            if len(e.get('cells',[]))>1:shown+=' (общий пакет)'
+            attempts+='<tr>'+''.join('<td>'+E(v)+'</td>' for v in (index,str(e.get('model_id','—'))+' / '+str(e.get('stage','—')),e.get('wall_ms','—'),shown))+'</tr>'
+        attempts+='</table><p>'+E(r.get('timing_note',''))+'</p>'
+        if not r.get('recognition_attempts'):attempts+='<p>Отдельные попытки OCR не сохранены.</p>'
+        if r['field']=='receipt_total':
+            attempts='<p><strong>Выбранный итог: '+E(r.get('after','—'))+'</strong></p>'+attempts
+        raw='<details><summary>Подробные сохранённые наблюдения</summary><pre>'+E(json.dumps(r.get('observations',[]),ensure_ascii=False,indent=2))+'</pre></details>'
+        page.append('<tr><td>'+E(label)+'</td><td>'+E(values)+'</td><td>'+pictures+'</td><td><div class="reason"><strong>Почему поле проверяется:</strong><ul>'+reasons+'</ul></div>'+attempts+raw+'</td></tr>')
+    (Path(directory)/'report.html').write_text(''.join(page)+'</table>',encoding='utf-8')
+
+
 def save_problem_digits(job_dir, rows, crops, book, corrections, original_crops=None, primary_inputs=None, footer_context=None,
                         rec_trace=None, attempt_inputs=None, vat_context=None, math_match=True):
     cells={(r['row_id'],f):c for r in rows for f,c in r['cells'].items()}
@@ -28,11 +108,11 @@ def save_problem_digits(job_dir, rows, crops, book, corrections, original_crops=
                 elif key=='receipt_total':keys.add((None,'receipt_total'))
     vat_observations=book.get('vat',[])
     vat_source=(vat_context or {}).get('source') or {}
-    if not any(x.get('number') is not None for x in vat_observations):
-        for row in rows:
-            if row.get('kind')=='tax':
-                keys.add((None,'printed_vat'))
-                keys.update((row['row_id'],f) for f in ('quantity','price','printed_total') if f in row['cells'])
+    vat_check_not_run=(vat_context or {}).get('source_status') == 'not_run'
+    vat_missing=(not vat_check_not_run and any(row.get('kind')=='tax' for row in rows)
+                 and not any(x.get('number') is not None for x in vat_observations))
+    if vat_missing:
+        keys.add((None,'printed_vat'))
     if (len({x['number'] for x in vat_observations if x.get('number') is not None})>1
             or any(x.get('number') is None for x in vat_observations)):
         if vat_source.get('row_id') is not None and vat_source.get('field'):
@@ -52,6 +132,9 @@ def save_problem_digits(job_dir, rows, crops, book, corrections, original_crops=
             keys.add((bucket['row_id'],bucket['field']))
         elif any(x.get('confidence') is not None and float(x['confidence'])<.8 for x in observations):
             keys.add((bucket['row_id'],bucket['field']))
+    keys={key for key in keys if key[1] in ('quantity','price','printed_total','receipt_total','printed_vat')}
+    if not keys:
+        return {'count':0, 'report':None, 'manifest':None, 'log_entries':[]}
     directory=Path(job_dir)/'problem_digits'
     directory.mkdir(exist_ok=True)
     records=[]
@@ -59,12 +142,16 @@ def save_problem_digits(job_dir, rows, crops, book, corrections, original_crops=
         if field not in ('quantity','price','printed_total','receipt_total','printed_vat'):continue
         change=changes.get((rid,field))
         cell=cells.get((rid,field),{})
-        record={'row_id':rid,'field':field,'reason':'auto_corrected' if change else 'conflicting_or_invalid_ocr',
+        reason=('auto_corrected' if change else
+                'vat_not_verified' if field=='printed_vat' and vat_missing and not vat_observations else
+                'requires_review')
+        record={'row_id':rid,'field':field,'reason':reason,
                 'before':change.get('before') if change else None,
                 'after':change.get('after') if change else cell.get('text'),
                 'source_bbox':cell.get('source_bbox'), 'numeric_roi':cell.get('numeric_roi'),
                 'observations':book.get('cells',{}).get(f'{rid}:{field}',{}).get('observations',[]),
                 'images':{}}
+        record['diagnostic_cell']={key:cell.get(key) for key in ('text','confidence','numeric_issue') if key in cell}
         trace_key='receipt_total' if field=='receipt_total' else 'printed_vat' if field=='printed_vat' else f'{rid}:{field}'
         record['recognition_attempts']=[{**e,'duration_scope':'shared_batch' if len(e.get('cells',[]))>1 else 'single_cell_or_detector_pipeline'}
                                         for e in events if trace_key in e.get('cells',[])]
@@ -142,22 +229,12 @@ def save_problem_digits(job_dir, rows, crops, book, corrections, original_crops=
     payload={'coordinate_note':'gridmesh_cell: полная ячейка, может содержать валюту. primary_ocr_input: фактический вход первого основного OCR до внутреннего масштабирования движком. recorded_roi: реконструкция по итоговым метаданным, может относиться к повторному чтению. source_bbox: фото; numeric_roi: пиксели ячейки. Не показаны все резервные попытки OCR.',
              'note':'Коррекция E4 и конфликт моделей — признаки для проверки, а не независимый эталон цифр.', 'cells':records}
     (directory/'manifest.json').write_text(json.dumps(payload,ensure_ascii=False,indent=2),encoding='utf-8')
-    E=lambda x:html.escape(str(x))
-    page=['<!doctype html><meta charset="utf-8"><title>Проблемные цифры</title><style>body{font:16px system-ui;margin:25px}td,th{border:1px solid #ccc;padding:10px}table{border-collapse:collapse}img{max-width:400px;max-height:160px}pre{white-space:pre-wrap}</style><h1>Проблемные цифровые ячейки</h1><p>'+E(payload['note'])+'</p><p>'+E(payload['coordinate_note'])+'</p><table><tr><th>Строка / поле</th><th>До → после</th><th>Фото</th><th>OCR-наблюдения</th></tr>']
-    for r in records:
-        pictures=''.join('<figure><img src="'+E(p)+'"><figcaption>'+E(label)+'</figcaption></figure>' for label,p in r['images'].items())
-        label='Печатный итог чека' if r['field']=='receipt_total' else 'Напечатанный НДС' if r['field']=='printed_vat' else f"{r['row_id']} / {r['field']}"
-        values=f"{r['before']} → {r['after']}" if r['reason']=='auto_corrected' else f"Выбранное значение: {r['after']}. Проблемные чтения и попытки — см. справа."
-        attempts='<h3>Модели и время попыток</h3><table><tr><th>№</th><th>Этап</th><th>Модель</th><th>Время, мс</th><th>Результаты OCR</th></tr>'
-        for e in r['recognition_attempts']:
-            attempts+='<tr>'+''.join('<td>'+E(v)+'</td>' for v in (e.get('event_id','—'),e['stage'],e['model_id'],e['wall_ms'],e.get('texts','В старой записи не сохранены')))+'</tr>'
-        attempts+='</table><p>'+E(r['timing_note'])+'</p>'
-        if not r['recognition_attempts']:attempts+='<p>Время отдельных попыток не сохранено.</p>'
-        page.append('<tr><td>'+E(label)+'</td><td>'+E(values)+'</td><td>'+pictures+'</td><td><pre>'+E(json.dumps(r['observations'],ensure_ascii=False,indent=2))+'</pre>'+attempts+'</td></tr>')
-    (directory/'report.html').write_text(''.join(page)+'</table>',encoding='utf-8')
+    render_problem_report(directory,payload,math_match=math_match)
     log_entries=[]
     for record in records:
-        label='Итог чека' if record['field']=='receipt_total' else f"Строка {record['row_id']} / {record['field']}"
+        label=('Итог чека' if record['field']=='receipt_total' else
+               'Напечатанный НДС: отдельная проверка не дала результата' if record['field']=='printed_vat' and record['reason']=='vat_not_verified' else
+               'Напечатанный НДС' if record['field']=='printed_vat' else f"Строка {record['row_id']} / {record['field']}")
         attempts=record['recognition_attempts']
         descriptions=[f"{x['model_id']} · {x['stage']} · {x['wall_ms']} мс"+
                       (' (общий пакет)' if x['duration_scope']=='shared_batch' else '') for x in attempts]

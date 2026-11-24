@@ -74,6 +74,80 @@ def _recover_observed_horizontal(image, physical, automatic):
         return {**physical, 'horizontal': horizontal}, recovered
     return physical, 0
 
+
+def _repair_extreme_horizontal_curves(image, data):
+    """Repair only extreme curves using long observed horizontal ink segments.
+
+    Search is bounded by the adjacent detected rules and only triggered by
+    severe curvature. Missing or ambiguous evidence leaves the grid unchanged.
+    """
+    from .geometry_lab.detection import Rule
+    H,W=image.shape[:2]
+    vs=data['vertical']; rules=list(data['horizontal'])
+    if len(vs)!=5 or len(rules)<4:
+        return data,0,0
+    left=max(0,round(vs[1].position)); right=min(W,round(vs[-1].position))
+    width=right-left
+    if width<100:
+        return data,0,0
+    xs=np.linspace(left,right,40); norm=(xs-W/2)/W
+    suspicious=[]
+    for i in range(1,len(rules)-1):
+        ys=rules[i].eval(norm)
+        linear=np.linspace(ys[0],ys[-1],len(ys))
+        if np.max(np.abs(ys-linear)) > max(12,width*.035):
+            suspicious.append(i)
+    if not suspicious:
+        return data,0,0
+    gray=cv2.cvtColor(image,cv2.COLOR_BGR2GRAY) if image.ndim==3 else image
+    repaired=0; unresolved=0
+    for idx in suspicious:
+        prev,old,nxt=rules[idx-1:idx+2]
+        top=max(0,int(np.ceil(np.max(prev.eval(norm))))+6)
+        bottom=min(H,int(np.floor(np.min(nxt.eval(norm))))-6)
+        if bottom-top<22:
+            unresolved+=1; continue
+        crop=gray[top:bottom,left:right]
+        binary=cv2.adaptiveThreshold(crop,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                     cv2.THRESH_BINARY_INV,31,9)
+        kernel=cv2.getStructuringElement(cv2.MORPH_RECT,(max(18,round(width*.06)),1))
+        strokes=cv2.morphologyEx(binary,cv2.MORPH_OPEN,kernel)
+        lines=cv2.HoughLinesP(strokes,1,np.pi/360,threshold=max(18,round(width*.06)),
+                              minLineLength=max(24,round(width*.08)),maxLineGap=8)
+        groups=[]
+        if lines is not None:
+            for x1,y1,x2,y2 in lines.reshape(-1,4):
+                dx=float(x2-x1)
+                if abs(dx)<max(24,width*.08) or abs(y2-y1)>abs(dx)*.08:continue
+                slope=float(y2-y1)/dx
+                mid_y=top+y1+slope*(width/2-x1)
+                if not top+4<mid_y<bottom-4:continue
+                group=next((g for g in groups if abs(g['mid_y']-mid_y)<4),None)
+                if group is None:
+                    group={'mid_y':mid_y,'segments':[]};groups.append(group)
+                group['segments'].append((left+x1,top+y1,left+x2,top+y2))
+        replacements=[]
+        for group in groups:
+            segments=group['segments']
+            points=np.array([(x,y) for x1,y1,x2,y2 in segments for x,y in ((x1,y1),(x2,y2))],dtype=float)
+            if np.ptp(points[:,0])<width*.45:continue
+            coeff=np.polyfit((points[:,0]-W/2)/W,points[:,1],1)
+            if np.max(np.abs(np.polyval(coeff,(points[:,0]-W/2)/W)-points[:,1]))>3:continue
+            ys=np.polyval(coeff,norm)
+            if np.min(ys-prev.eval(norm))<6 or np.min(nxt.eval(norm)-ys)<6:continue
+            replacements.append(Rule('h',coeff,float(np.polyval(coeff,0)),0.0,(left,right)))
+        replacements.sort(key=lambda rule:rule.position)
+        if len(replacements)!=2 or np.min(replacements[1].eval(norm)-replacements[0].eval(norm))<8:
+            unresolved+=1;continue
+        # The corrupt rule is replaced by the two independently visible lines.
+        rules[idx:idx+1]=replacements
+        repaired+=1
+        break  # Indices change after insertion; defer any other suspect to review.
+    unresolved+=max(0,len(suspicious)-repaired-unresolved)
+    if repaired:
+        return {**data,'horizontal':rules},repaired,unresolved
+    return data,0,unresolved
+
 def build_grid(image, *, rectify=False, phase=None):
     _debug=get_debug()
     _grid_t0=perf_counter() if _debug is not None else None
@@ -131,6 +205,11 @@ def build_grid(image, *, rectify=False, phase=None):
         raise ValueError('Не удалось уверенно найти печатную сетку таблицы. Загрузите другое фото.')
     if not 5 <= len(data['vertical']) <= 9 or len(data['horizontal']) < 3:
         raise ValueError('Не удалось определить границы столбцов товарной таблицы. Требуется проверка фото.')
+    _repair_t0=perf_counter() if _debug is not None else None
+    data, repaired_curves, unresolved_curves = _repair_extreme_horizontal_curves(image, data)
+    if _debug is not None:
+        _debug.add_geometry('repair_extreme_horizontal_curves',(perf_counter()-_repair_t0)*1000,
+                            {'repaired':repaired_curves,'unresolved':unresolved_curves})
     fold_recovered = 0
     if method == 'AutoGrid GridRefine V3':
         _fold_t0=perf_counter() if _debug is not None else None
@@ -174,6 +253,10 @@ def build_grid(image, *, rectify=False, phase=None):
     check = safety(result.info['cell_mesh'] if not rectify else result, image.shape)
     review = bool(report.get('autogrid', {}).get('geometry_review_required'))
     warnings = []
+    if repaired_curves:
+        warnings.append(f'Восстановлены границы по видимым участкам линий: {repaired_curves}; проверьте сетку.')
+    if unresolved_curves:
+        warnings.append('Обнаружена сильно искривлённая граница строки; проверьте сетку.')
     if left_recovered:
         warnings.append(f'Уточнены левые участки линий по изображению: {left_recovered}; проверьте сетку.')
     if recovered_horizontal:
@@ -205,6 +288,8 @@ def build_grid(image, *, rectify=False, phase=None):
     if _debug is not None:
         _debug.add_geometry('safety_and_overlay',(perf_counter()-_overlay_t0)*1000)
     return result, overlay, {'method': method, 'autogrid_vertical_count': auto_vertical_count,
+                             'repaired_extreme_horizontal': repaired_curves,
+                             'unresolved_extreme_horizontal': unresolved_curves,
                              'physical_detection_selection': report.get('selection'),
                              'fold_recovered_horizontal': fold_recovered, 'left_recovered_horizontal': left_recovered,
                              'ridge_refined_horizontal': sum(edge.get('refinement') == 'nearby_source_ridge_3px' for edge in report.get('edges', [])),

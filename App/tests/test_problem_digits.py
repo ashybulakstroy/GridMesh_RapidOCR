@@ -4,6 +4,43 @@ import numpy as np
 from App.ocr.problem_digits import save_problem_digits
 
 
+def test_vat_check_not_run_does_not_mark_correct_tax_cells_as_errors(tmp_path):
+    rows=[{'row_id':2,'kind':'tax','cells':{
+        'quantity':{'text':'1424','confidence':.99995},
+        'price':{'text':'1','confidence':.99978}}}]
+    result=save_problem_digits(tmp_path,rows,{}, {'cells':{},'footer':[]},
+                               {'changes':[]},vat_context={'source_status':'not_run'})
+    assert result['count']==0 and result['manifest'] is None and result['report'] is None
+    assert result['log_entries']==[]
+    assert not (tmp_path/'problem_digits').exists()
+
+
+def test_unrelated_corrections_do_not_create_empty_report(tmp_path):
+    changes={'changes':[{'row_id':1,'field':'name','before':'x','after':'y'}]}
+    result=save_problem_digits(tmp_path,[],{}, {},changes)
+    assert result['count']==0 and result['log_entries']==[]
+    assert not (tmp_path/'problem_digits').exists()
+
+
+def test_vat_check_without_observation_is_distinct_from_ocr_error(tmp_path):
+    rows=[{'row_id':2,'kind':'tax','cells':{
+        'quantity':{'text':'1424','confidence':.99995},
+        'price':{'text':'1','confidence':.99978}}}]
+    result=save_problem_digits(tmp_path,rows,{}, {'cells':{},'vat':[]},
+                               {'changes':[]},vat_context={'source_status':'unavailable'})
+    record=json.loads((tmp_path/result['manifest']).read_text(encoding='utf-8'))['cells']
+    assert [(x['row_id'],x['field'],x['reason']) for x in record]==[(None,'printed_vat','vat_not_verified')]
+    assert 'проверка напечатанного НДС не дала' in (tmp_path/result['report']).read_text(encoding='utf-8')
+
+
+def test_invalid_tax_cell_is_reported_even_if_vat_check_not_run(tmp_path):
+    rows=[{'row_id':2,'kind':'tax','cells':{'price':{'text':'?','confidence':.4}}}]
+    result=save_problem_digits(tmp_path,rows,{}, {},{'changes':[]},
+                               vat_context={'source_status':'not_run'})
+    records=json.loads((tmp_path/result['manifest']).read_text(encoding='utf-8'))['cells']
+    assert [(x['row_id'],x['field']) for x in records]==[(2,'price')]
+
+
 def test_debug_evidence_keeps_photographic_pixels_and_ocr_alternatives(tmp_path):
     image=np.arange(20*30,dtype=np.uint8).reshape(20,30)
     observations=[{'text':'17','number':'17','model':'v6'}, {'text':'1','number':'1','model':'v5'}]
@@ -59,6 +96,34 @@ def test_footer_conflict_includes_source_photo_model_and_each_attempt_time(tmp_p
     assert record['recognition_attempts'][0]['model_id']=='v5'
     assert record['footer_regions'][0]['source_bbox']==[10,20,50,30]
     assert np.array_equal(cv2.imread(str(directory/record['recognition_attempts'][0]['input_image']),0),image[20:30,10:50])
+
+
+def test_report_shows_ocr_text_under_attempt_photo_and_review_reason(tmp_path):
+    image=np.full((30,50),255,np.uint8)
+    rows=[{'row_id':1,'cells':{'price':{'text':'100','confidence':.95}}}]
+    trace={'events':[{'event_id':1,'cells':['1:price'],'stage':'primary_rec_cell',
+                     'model_id':'v6','wall_ms':12.5,'mode':'REC_only','success':True,
+                     'texts':['90 <bad>'],'confidences':[.6]}]}
+    result=save_problem_digits(tmp_path,rows,{(1,'price'):image},{},{},
+                               rec_trace=trace,attempt_inputs={1:image})
+    report=(tmp_path/result['report']).read_text(encoding='utf-8')
+    assert 'attempt_1: v6 · 12.5 мс' in report
+    assert 'Распознано: 90 &lt;bad&gt;' in report
+    assert 'низкая уверенность OCR' in report
+
+
+def test_report_explains_disagreement_and_selected_footer(tmp_path):
+    image=np.full((30,50),255,np.uint8)
+    trace={'events':[{'event_id':1,'cells':['receipt_total'],'stage':'first',
+                     'model_id':'v5','wall_ms':12,'mode':'REC_only','success':True,'texts':['7598']},
+                    {'event_id':2,'cells':['receipt_total'],'stage':'retry',
+                     'model_id':'v6','wall_ms':8,'mode':'REC_only','success':True,'texts':['75968']}]}
+    result=save_problem_digits(tmp_path,[],{}, {},{},footer_context={'total':'75968'},
+                               rec_trace=trace,attempt_inputs={1:image,2:image})
+    report=(tmp_path/result['report']).read_text(encoding='utf-8')
+    assert 'Выбранный итог: 75968' in report
+    assert 'дали разные числовые значения' in report
+    assert 'Распознано: 7598' in report and 'Распознано: 75968' in report
 
 
 def test_low_confidence_failed_attempt_and_vat_conflict_are_included(tmp_path):

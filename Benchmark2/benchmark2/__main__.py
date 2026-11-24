@@ -7,8 +7,10 @@ def validate():
     samples=json.loads((ROOT/'data/samples.json').read_text(encoding='utf-8'))
     models=json.loads((ROOT/'config/models.json').read_text(encoding='utf-8'))
     assert len(samples)==17 and len({x['id'] for x in samples})==17
-    assert len(models)==6 and all(s['cyrillic'] for s in models)
-    print('CHECK: 17 original ROIs, 6 Cyrillic engines, 3 passes incl. warmup')
+    default_models=[s for s in models if s.get('enabled_by_default',True)]
+    assert len(models)==7 and len(default_models)==6 and all(s['cyrillic'] for s in default_models)
+    assert all(s.get('numeric_compatible') for s in models if not s.get('cyrillic'))
+    print('CHECK: 17 original ROIs, 6 default Cyrillic engines, 1 numeric-only comparator, 3 passes incl. warmup')
     try:
         import platform
         print('Python:',platform.python_version(),', platform:',platform.platform())
@@ -18,11 +20,14 @@ def main():
     # Windows consoles may use a code page that cannot encode progress glyphs.
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(errors='backslashreplace')
-    p=argparse.ArgumentParser(description='Benchmark2 — 6 Cyrillic OCR models, 17 real ROIs')
+    p=argparse.ArgumentParser(description='Benchmark2 — 7 Cyrillic OCR models, 17 real ROIs')
     p.add_argument('command',choices=['prepare','models','validate','run'])
     p.add_argument('--offline',action='store_true',help='Never download from network')
     p.add_argument('--no-browser',action='store_true')
     p.add_argument('--no-prepare',action='store_true',help='Run only on already prepared local files')
+    p.add_argument('--models',help='Comma-separated model IDs; default: all configured models')
+    p.add_argument('--cell-types',choices=['name','label','numeric'],action='append',
+                   help='Repeatable input type filter; default: all cells')
     a=p.parse_args()
     if a.command=='validate':validate();return
     if a.command=='prepare':prepare(download_missing=not a.offline);return
@@ -43,7 +48,9 @@ def main():
                   f"CPU={s.get('cpu_percent','—')}%",flush=True)
     error=None
     try:
-        dest=run(offline=a.offline,auto_prepare=not a.no_prepare,progress_cb=progress)
+        model_ids=[x.strip() for x in a.models.split(',') if x.strip()] if a.models else None
+        dest=run(offline=a.offline,auto_prepare=not a.no_prepare,progress_cb=progress,
+                 model_ids=model_ids,cell_types=a.cell_types)
         print('[FINISHED] report:',dest/'report.html',flush=True)
         print('[FINISHED] csv:',dest/'raw.csv',flush=True)
     except Exception:

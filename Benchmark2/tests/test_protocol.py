@@ -1,7 +1,7 @@
 """No network, OCR inference, or fake performance records in these checks."""
 import json, unittest
 from pathlib import Path
-from benchmark2.runner import metric, levenshtein
+from benchmark2.runner import canonical_numeric, metric, levenshtein
 from benchmark2.prepare import ROOT
 from benchmark2.report import build_report
 
@@ -10,11 +10,15 @@ class TestProtocol(unittest.TestCase):
         self.samples=json.loads((ROOT/'data/samples.json').read_text(encoding='utf-8'))
         self.models=json.loads((ROOT/'config/models.json').read_text(encoding='utf-8'))
         self.config=json.loads((ROOT/'config/benchmark.json').read_text(encoding='utf-8'))
-    def test_six_real_cyrillic_engines(self):
-        self.assertEqual(len(self.models),6)
-        self.assertTrue(all(m['cyrillic'] for m in self.models))
+    def test_seven_real_cyrillic_engines(self):
+        self.assertEqual(len(self.models),7)
+        self.assertTrue(all(m['cyrillic'] for m in self.models if m.get('enabled_by_default',True)))
         self.assertEqual({m['kind'] for m in self.models},{'rapid','tesseract','windows'})
         self.assertIn('v6_medium_cyrillic',{m['id'] for m in self.models})
+        self.assertIn('v6_tiny_official',{m['id'] for m in self.models})
+        official=next(m for m in self.models if m['id']=='v6_tiny_official')
+        self.assertFalse(official['cyrillic'])
+        self.assertTrue(official['numeric_compatible'])
         self.assertNotIn('v6_small_official',{m['id'] for m in self.models})
     def test_three_passes(self):
         self.assertEqual(self.config['total_passes'],3)
@@ -33,6 +37,8 @@ class TestProtocol(unittest.TestCase):
         self.assertEqual(metric('Перчатки 1000','Перчатки 1000')['edit_distance'],0)
         self.assertGreater(metric('Кабель','Kaбeль')['edit_distance'],0)
         self.assertEqual(levenshtein('тест','тест'),0)
+        self.assertEqual(canonical_numeric('55 564,00'),'55564')
+        self.assertTrue(metric('55564','55 564,00',cell_type='numeric')['exact'])
     def test_report_no_fabricated_timings(self):
         import tempfile
         with tempfile.TemporaryDirectory() as temp:
@@ -42,7 +48,7 @@ class TestProtocol(unittest.TestCase):
             self.assertIn('17 ячеек',text)
             self.assertIn('Нет измеренных результатов',text)
             self.assertIn('PP-OCRv6 Medium Cyrillic',text)
-            self.assertEqual(len(json.loads((f/'summary.json').read_text(encoding='utf-8'))),6)
+            self.assertEqual(len(json.loads((f/'summary.json').read_text(encoding='utf-8'))),7)
 if __name__=='__main__':unittest.main()
 
 class TestPipelineSmoke(unittest.TestCase):
@@ -81,3 +87,32 @@ class TestPipelineSmoke(unittest.TestCase):
             rows=[json.loads(x) for x in entries]
             self.assertEqual(len([r for r in rows if r['phase']=='warmup']),102)
             self.assertEqual(len([r for r in rows if r['phase']=='measured']),204)
+
+    def test_filtered_run_uses_only_requested_models_and_numeric_cells(self):
+        import tempfile, shutil
+        from unittest.mock import patch
+        from PIL import Image
+        import benchmark2.runner as b
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            (root/'config').mkdir();(root/'data/cells').mkdir(parents=True);(root/'results').mkdir()
+            for p in ('samples.json',):shutil.copy2(ROOT/'data'/p,root/'data'/p)
+            for p in ('models.json','benchmark.json'):shutil.copy2(ROOT/'config'/p,root/'config'/p)
+            samples=json.loads((root/'data/samples.json').read_text(encoding='utf-8'))
+            manifest=[]
+            for s in samples:
+                f=root/'data/cells'/(s['id']+'.png');Image.new('RGB',(80,22),'white').save(f)
+                from benchmark2.prepare import sha
+                manifest.append(dict(s,file='data/cells/'+f.name,width=80,height=22,crop_sha256=sha(f)))
+            (root/'data/cells_manifest.json').write_text(json.dumps(manifest,ensure_ascii=False),encoding='utf-8')
+            class FakeAdapter:
+                effective_parameters={'fake':True}
+                def recognize(self, im):return '55564',.99
+                def close(self):pass
+            chosen=['v6_tiny_official','v6_tiny_cyrillic_optional']
+            with patch.object(b,'ROOT',root),patch.object(b,'make_adapter',side_effect=lambda *a:FakeAdapter()),patch.object(b,'precompute',side_effect=lambda m,r:{s['id']:[Image.new('RGB',(80,22),'white')] for s in m}):
+                dest=b.run(auto_prepare=False,model_ids=chosen,cell_types=['numeric'])
+            rows=[json.loads(x) for x in (dest/'raw.jsonl').read_text(encoding='utf-8').splitlines()]
+            self.assertEqual(len(rows),18)
+            self.assertEqual({r['model_id'] for r in rows},set(chosen))
+            self.assertEqual({r['cell_type'] for r in rows},{'numeric'})

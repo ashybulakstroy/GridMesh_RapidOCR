@@ -9,7 +9,7 @@
   "score_policy": "CER / exact by script-supported fields; no transliteration; provisional agent-verified transcription, owner not approved",
   "base_project": "C:\\Work\\Projects\\Prj_18_OCR_2",
   "source_repository": "ashybulakstroy/GridMesh_RapidOCR",
-  "model_count": 6,
-  "model_policy": "Six Cyrillic-capable OCR engines; English-only variants excluded",
+  "model_count": 7,
+  "model_policy": "Six default Cyrillic OCR engines plus one explicitly selected official PP-OCRv6 Tiny comparator for numeric cells only; English-only variants excluded from text benchmarks",
   "parameter_policy": "Only required model selection, script/language, detector disabled, architecture-required shape and single-line Tesseract PSM; no tuning sweeps"
 }

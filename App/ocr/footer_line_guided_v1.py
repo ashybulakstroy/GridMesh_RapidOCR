@@ -13,6 +13,48 @@ import numpy as np
 _NUMERIC_LINE = re.compile(r"\s*[\d\s.,]+\s*(?:[ТT₸]|тг\.?)?\s*\Z", re.I)
 
 
+def _slanted_footer_bounds(ink, *, x0, yy0, anchor, row_h, relaxed=False):
+    """Find two long, actually printed, similarly sloped footer borders."""
+    height,width=ink.shape
+    lines=cv2.HoughLinesP(ink,1,np.pi/360,
+                          threshold=max(18 if relaxed else 20,round(width*(.15 if relaxed else .3))),
+                          minLineLength=max(28,round(width*(.5 if relaxed else .55))),
+                          maxLineGap=10 if relaxed else 8)
+    if lines is None:
+        return (_slanted_footer_bounds(ink,x0=x0,yy0=yy0,anchor=anchor,row_h=row_h,relaxed=True)
+                if not relaxed else None)
+    segments=[]
+    for xa,ya,xb,yb in lines.reshape(-1,4):
+        if xb<xa:xa,xb,ya,yb=xb,xa,yb,ya
+        span=xb-xa
+        if span<width*.55 or span==0:continue
+        slope=float(yb-ya)/float(span)
+        if abs(slope)>.12:continue
+        center=float(yy0+ya+slope*(width/2-xa))
+        segments.append({'center':center,'slope':slope,'span':int(span),
+                         'x_start':x0+int(xa),'x_end':x0+int(xb)})
+    upper=[s for s in segments if abs(s['center']-anchor)<=max(8,row_h*.32)]
+    lower=[s for s in segments if anchor+max(10,row_h*.3)<s['center']<=anchor+max(48,row_h*1.9)]
+    pairs=[]
+    for a in upper:
+        for b in lower:
+            gap=b['center']-a['center']
+            if not 12<=gap<=max(44,min(72,row_h*1.9)):continue
+            if abs(a['slope']-b['slope'])>.06:continue
+            overlap=min(a['x_end'],b['x_end'])-max(a['x_start'],b['x_start'])
+            if overlap<width*.5:continue
+            pairs.append((a,b))
+    if not pairs:
+        return (_slanted_footer_bounds(ink,x0=x0,yy0=yy0,anchor=anchor,row_h=row_h,relaxed=True)
+                if not relaxed else None)
+    # The upper border is the observed grid bottom; prioritize its alignment
+    # over long text strokes that can appear a few pixels below it.
+    pairs.sort(key=lambda p:(abs(p[0]['center']-anchor),-min(p[0]['span'],p[1]['span'])))
+    best=pairs[0]
+    if any(abs(p[1]['center']-best[1]['center'])>5 for p in pairs[1:]):return None
+    return best
+
+
 def guide_from_grid(rect, image_shape):
     """Original-photo price column and lowest detected grid line, not a guess.
 
@@ -105,12 +147,24 @@ def isolate_footer(image, guide):
         if abs(a-anchor)>max(8,row_h*.32) or b<=anchor+max(6,row_h*.15):
             continue
         pairs.append((a,b))
+    method='last_bounded_horizontal_rule_band'
+    border_evidence=None
     if not pairs:
-        return fail('no_isolated_footer_band',search_bbox=[x0,yy0,x1,yy1],
-                    observed_separator_y=separators, threshold=threshold)
-    a,b=max(pairs,key=lambda p:p[1])  # most downstream bounded printed line
-    y0=max(0,a+2)
-    y1=min(h,b-1)
+        border_evidence=_slanted_footer_bounds(ink,x0=x0,yy0=yy0,anchor=anchor,row_h=row_h)
+        if border_evidence is None:
+            return fail('no_isolated_footer_band',search_bbox=[x0,yy0,x1,yy1],
+                        observed_separator_y=separators, threshold=threshold)
+        upper,lower=border_evidence
+        # A rectangular source crop encloses both slanted borders, preserving
+        # nearby digits. It does not paint in synthetic pixels or lines.
+        half=width/2
+        a=int(np.floor(upper['center']-abs(upper['slope'])*half))
+        b=int(np.ceil(lower['center']+abs(lower['slope'])*half))
+        y0=max(0,a+1);y1=min(h,b)
+        method='observed_slanted_footer_borders'
+    else:
+        a,b=max(pairs,key=lambda p:p[1])  # most downstream bounded printed line
+        y0=max(0,a+2);y1=min(h,b-1)
     if y1-y0<9:
         return fail('footer_band_too_narrow',observed_separator_y=separators)
     image_crop=image[y0:y1,x0:x1].copy()
@@ -125,7 +179,8 @@ def isolate_footer(image, guide):
         'search_bbox':[x0,yy0,x1,yy1], 'observed_separator_y':separators,
         'selected_separators_y':[a,b], 'threshold':threshold,
         'crop_shape_hw':list(image_crop.shape[:2]),
-        'method':'last_bounded_horizontal_rule_band'}
+        'method':method,
+        **({'border_evidence':border_evidence} if border_evidence else {})}
 
 
 def attempt_focused_footer(image, guide, read_one, parse_number, *, min_confidence=.86):

@@ -840,9 +840,12 @@ def _process(data, profile, job_dir, rectify):
                                 'attempts':footer_attempts+footer_variant_attempts},
                 rec_trace=current_trace(), attempt_inputs=current_inputs(),
                 vat_context=vat_evidence, math_match=match)
-            processing_log.extend(problem_digits.pop('log_entries',[]))
-            processing_log.append({'type':'debug', 'stage':'Проблемные цифры',
-                'message':f"Фото проблемных цифровых ячеек: {problem_digits['count']}. Отчёт: {job_dir.relative_to(ROOT).as_posix()}/problem_digits/report.html"})
+            if problem_digits['count']:
+                processing_log.extend(problem_digits.pop('log_entries',[]))
+                processing_log.append({'type':'debug', 'stage':'Проблемные цифры',
+                    'message':f"Фото проблемных цифровых ячеек: {problem_digits['count']}. Отчёт: {job_dir.relative_to(ROOT).as_posix()}/problem_digits/report.html"})
+            else:
+                problem_digits = None
         except Exception as exc:
             processing_log.append({'type':'error','stage':'Проблемные цифры',
                 'message':f'Не удалось сохранить фото цифровых ячеек: {type(exc).__name__}: {exc}'})
@@ -874,13 +877,26 @@ def _process(data, profile, job_dir, rectify):
 
 def read_printed_footer(image, y_bottom, rows=(), *, footer_guide=None):
     """Read photographed footer independently; optional legacy sum evidence."""
+    def read_footer_line(source_crop):
+        # Only change OCR pixels when a separated currency glyph is confirmed.
+        # Uncertain crops retain the original image, including all digits.
+        prepared, roi = prepare_numeric_input(source_crop, 'price')
+        removed = roi.get('currency_removed_before_ocr', False)
+        result = read_line(prepared if removed else source_crop)
+        if result is not None:
+            result['currency_crop'] = {
+                'removed_before_ocr': bool(removed),
+                'status': roi.get('currency_crop_status', 'not_confirmed'),
+                'ocr_roi_bbox': roi.get('ocr_roi_bbox') if removed else None,
+            }
+        return result
     # FOCUSED_FOOTER_EXPERIMENT_V1: optical evidence strictly between source rules.
     focused_attempt=None
     focus_info={'status':'disabled'}
     if setting('OCR_FOOTER_FOCUS_ENABLE','1') == '1':
         def focused_reader(crop):
             with rec_scope(['receipt_total'], 'printed_footer_focused'):
-                return read_line(crop)
+                return read_footer_line(crop)
         min_conf=float(setting('OCR_FOOTER_FOCUS_MIN_CONF','0.86'))
         # A recovered VAT row can extend the table after this guide was built.
         # Do not read that newly recovered row as though it were the footer.
@@ -902,7 +918,7 @@ def read_printed_footer(image, y_bottom, rows=(), *, footer_guide=None):
     # All footer recognitions are attributable to one printed total.
     def footer_read_line(source_crop):
         with rec_scope(['receipt_total'],'printed_footer_primary'):
-            return read_line(source_crop)
+            return read_footer_line(source_crop)
     def footer_read_full(source_crop, **kwargs):
         with rec_scope(['receipt_total'],'printed_footer_detector'):
             return read_full(source_crop, **kwargs)
@@ -950,6 +966,29 @@ def read_printed_footer(image, y_bottom, rows=(), *, footer_guide=None):
                 (direct['confidence'] >= .8 and bool(rows) and all(r['line_total'] is not None for r in rows)
                  and abs(current_sum-candidate) <= Decimal('0.01')))):
             total, footer_lines = str(candidate), [direct]
+        # An independent recognizer can confirm a readable but sub-threshold
+        # amount before trying multiple crops and detector-based recognition.
+        if total is None and candidate is not None and candidate > 0:
+            source_crop = image[fast_top:fast_bottom,fast_x:]
+            prepared, roi = prepare_numeric_input(source_crop, 'price')
+            if not roi.get('currency_removed_before_ocr', False):
+                prepared = source_crop
+            with rec_scope(['receipt_total'], 'printed_footer_v6_confirmation'):
+                check = ExperimentModelPool().recognize(
+                    'v6_tiny_cyrillic_optional', prepared, 'printed_footer_v6_confirmation')
+            check_text = str(check.get('text') or '').strip()
+            check_value = number(check_text) if re.fullmatch(r'[\d\s,.]+\s*[TТт₸]?', check_text) else None
+            check_confidence = check.get('confidence')
+            matched = (check_value is not None and check_value > 0 and
+                       abs(check_value-candidate) <= Decimal('0.01'))
+            footer_attempts.append({'strategy':'v6_tiny_cyrillic_confirmation',
+                'model_id':'v6_tiny_cyrillic_optional', 'text':check_text,
+                'confidence':check_confidence, 'total':str(check_value) if check_value is not None else None,
+                'matched':matched, 'wall_ms':check.get('wall_ms'),
+                'lines':[{**check, 'bbox':direct['bbox']}],
+                **({'error':check['error']} if check.get('error') else {})})
+            if matched:
+                total, footer_lines = str(candidate), [direct]
     # The printed baseline can slope above the lowest table intersection.
     # Try small overlapping footer crops before invoking the costly detector.
     # Agreement never changes product values or hides a sum mismatch.
