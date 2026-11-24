@@ -99,7 +99,7 @@ def save_problem_digits(job_dir, rows, crops, book, corrections, original_crops=
                 or (cell.get('confidence') is not None and float(cell['confidence'])<.8)):
             keys.add(key)
     for event in events:
-        if (not event.get('success',True) or any(x in event.get('stage','') for x in ('retry','recovery','second_pass'))
+        if (not event.get('success',True) or any(x in event.get('stage','') for x in ('retry','recovery','second_pass','e5_tesseract'))
                 or any(float(x)<.8 for x in event.get('confidences',[]))):
             for key in event.get('cells',[]):
                 if ':' in key:

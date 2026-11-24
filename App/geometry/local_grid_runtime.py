@@ -1,4 +1,4 @@
-"""LocalGrid PaperGuard V2 for GridMesh 3.0.
+"""LocalGrid PaperGuard V3 for GridMesh 3.0.
 
 Enabled automatically at installation via OCR_LOCALGRID_MODE=on. No OCR changes and no monkey-patches.
 Runs within the normal build_grid() call and uses exactly the standard mesh
@@ -57,13 +57,17 @@ def try_local_grid(image):
     faint or completely invisible rules still require regression coverage.
     """
     started = perf_counter()
-    stats = {'status': 'rejected', 'route': 'paper_then_fast_local_v2_then_completeness_then_smart', 'fallback_to_full': True}
+    stats = {'status': 'rejected', 'route': 'paper_then_preflight_local_v2_then_completeness_then_smart', 'fallback_to_full': True}
     # Step 1. Find the printed receipt's paper envelope before the table.
     paper = locate_paper(image)
     stats['paper_ms'] = round(paper.elapsed_ms, 3)
     stats['paper_bbox'] = list(paper.bbox) if paper.bbox else None
     stats['paper_status'] = paper.reason
     stats['paper_metrics'] = paper.metrics
+    if paper.bbox is None:
+        stats.update(status='fallback_to_smart', reason='paper_not_confident_skip_unverifiable_fast', v2_skipped=True)
+        stats['total_ms'] = round((perf_counter()-started)*1000, 3)
+        return None, {'status':'REJECTED', 'reason':stats['reason']}, stats
     # Paper contour is a proposal, not a trusted crop: if ambiguous, use
     # whole-image table ROI discovery, still audit every observed line.
     t = perf_counter()
@@ -78,13 +82,21 @@ def try_local_grid(image):
     if loc.bbox is None:
         stats['total_ms'] = round((perf_counter()-started)*1000, 3)
         return None, {'status': 'REJECTED', 'reason':loc.reason}, stats
+    x0, y0, x1, y1 = loc.bbox
+    roi_pixels = (x1-x0)*(y1-y0)
+    segments = loc.diagnostics.get('segments', 0)
+    stats.update(roi_pixels=roi_pixels, roi_segments=segments)
+    if roi_pixels > 180_000 or segments > 35:
+        stats.update(status='fallback_to_smart', reason='fast_preflight_large_roi',
+                     v2_skipped=True, fast_roi_limit_pixels=180_000, fast_segment_limit=35)
+        stats['total_ms'] = round((perf_counter()-started)*1000, 3)
+        return None, {'status':'REJECTED', 'reason':stats['reason']}, stats
     # Large local regions are costly and have shown partial-grid failures on
     # long receipts. Leave those to the full detector without a costly V2 run.
     if stats['roi_area_fraction'] is not None and stats['roi_area_fraction'] > .20:
         stats.update(status='fallback_to_smart', reason='roi_too_large')
         stats['total_ms'] = round((perf_counter()-started)*1000, 3)
         return None, {'status':'REJECTED', 'reason':'roi_too_large'}, stats
-    x0, y0, x1, y1 = loc.bbox
     region = image[y0:y1, x0:x1]
     if region.size == 0:
         stats['total_ms'] = round((perf_counter()-started)*1000, 3)
@@ -128,7 +140,7 @@ def try_local_grid(image):
                     return global_graph, {
                         'status':'OBSERVED_NOT_VERIFIED',
                         'selection':'local_roi_v2_paperguard',
-                        'version':'local_grid_paperguard_v2',
+                        'version':'local_grid_paperguard_v3',
                         'edges':ink,
                         'local_report':report,
                         'completeness_audit':audit,

@@ -1,17 +1,40 @@
 import os
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import cv2
 import numpy as np
 
 from App.geometry import service
+from App.geometry import local_grid_runtime
 from App.geometry.grid_completeness import audit_printed_rows
 from App.geometry.geometry_lab.algorithms import intersection
 
 
 class LocalGridRouteTest(unittest.TestCase):
+    def test_uncertain_paper_skips_local_v2(self):
+        paper = SimpleNamespace(elapsed_ms=1, bbox=None, reason='paper_not_confident', metrics={})
+        with patch.object(local_grid_runtime, 'locate_paper', return_value=paper), \
+                patch.object(local_grid_runtime, 'physical_v2') as detector:
+            graph, _, stats = local_grid_runtime.try_local_grid(np.zeros((300, 400, 3), np.uint8))
+        self.assertIsNone(graph)
+        self.assertEqual(stats['reason'], 'paper_not_confident_skip_unverifiable_fast')
+        detector.assert_not_called()
+
+    def test_large_roi_skips_local_v2(self):
+        paper = SimpleNamespace(elapsed_ms=1, bbox=(0, 0, 700, 700), reason='paper_candidate', metrics={})
+        location = SimpleNamespace(bbox=(0, 0, 500, 400), reason='ok',
+                                   diagnostics={'roi_area_fraction':.15, 'segments':10})
+        with patch.object(local_grid_runtime, 'locate_paper', return_value=paper), \
+                patch.object(local_grid_runtime, 'locate_table', return_value=location), \
+                patch.object(local_grid_runtime, 'physical_v2') as detector:
+            graph, _, stats = local_grid_runtime.try_local_grid(np.zeros((800, 800, 3), np.uint8))
+        self.assertIsNone(graph)
+        self.assertEqual(stats['reason'], 'fast_preflight_large_roi')
+        detector.assert_not_called()
+
     def test_disabled_mode_uses_original_detector(self):
         with patch.dict(os.environ, {}, clear=True), \
                 patch('App.config.setting', return_value='off'), \

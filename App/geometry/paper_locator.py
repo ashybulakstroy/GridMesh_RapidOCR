@@ -30,8 +30,12 @@ def locate_paper(image, *, target_width=450):
     gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY) if small.ndim == 3 else small
     h, w = gray.shape
     otsu, _ = cv2.threshold(gray,0,255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+    # A dark textured/photo-reflective background can join the white paper to
+    # the image border at medium brightness. Above 200 the paper often becomes
+    # its own connected component. These are *proposals*, not trusted crops.
     thresholds = sorted(set([int(np.clip(otsu+26, 120, 205)),
-                             int(np.clip(otsu+46, 140, 215)), 165]))
+                             int(np.clip(otsu+46, 140, 215)),
+                             165, 200, 210, 218]))
     candidates=[]
     kernel=np.ones((5,5),np.uint8)
     for threshold in thresholds:
@@ -72,7 +76,9 @@ def locate_paper(image, *, target_width=450):
     polygon=cv2.approxPolyDP(contour,eps,True).reshape(-1,2).astype(float)/scale
     return PaperLocation((x0,y0,x1,y1),np.rint(polygon).astype(int).tolist(),
                          (perf_counter()-start)*1000,'paper_candidate',
-                         {'threshold':threshold,'mask_fraction':round(fraction,4),
+                         {'threshold':threshold,
+                          'threshold_strategy':'high_brightness_disconnection' if threshold>=190 else 'standard',
+                          'mask_fraction':round(fraction,4),
                           'rectangularity':round(rectangularity,4),
                           'bright_fraction':round(bright_fraction,4),
                           'bbox_fraction':round((x1-x0)*(y1-y0)/(W*H),4),

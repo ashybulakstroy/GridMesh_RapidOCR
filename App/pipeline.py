@@ -21,6 +21,7 @@ from .ocr.numeric_roi import crop_numeric_ink, prepare_numeric_input
 from .ocr.price_candidate import prepare_price_candidate
 from .ocr.p1_recovery import recover_invalid_and_rows, recover_total_mismatch
 from .ocr.p1_double_retry import retry_suspect_cells
+from .ocr.e5_tesseract import recover_with_tesseract
 from .ocr.experiment_matrix import CandidateBook, solve_matrix
 from .ocr.experiment_original import OriginalNumericCache
 from .ocr.experiment_footer import scan_footer
@@ -269,7 +270,7 @@ def _process_job(data, publish=None, job_id=None, *, rectify=False, rec_tracker)
 
 def _process(data, profile, job_dir, rectify):
     started = time.perf_counter()
-    e4_enabled = setting('OCR_E4_ENABLE','0') == '1'
+    e4_enabled = setting('OCR_E4_ENABLE','1') == '1'
     adaptive_enabled = e4_enabled and setting('OCR_E4_ADAPTIVE','1') == '1'
     adaptive_info = {'enabled':adaptive_enabled, 'first_ready':False,
                      'first_elapsed_ms':None, 'probes_before_first':None, 'early_solver_checks':0}
@@ -569,11 +570,32 @@ def _process(data, profile, job_dir, rectify):
                            max_retries=max(0,retry_budget-initial_recovery['attempted'])))
     geometry['ocr_recovery']['footer'] = footer_recovery
     log_retry_details(processing_log, footer_recovery, 'Дополнительная проверка итога')
+    profile.phase('E5: проверка проблемных цифр Tesseract')
+    try:
+        e5_result = recover_with_tesseract(rows, crop_map, geometry['ocr_recovery'])
+    except Exception as exc:
+        e5_result = {'status':'error', 'details':[], 'candidates':[],
+                     'error':f'{type(exc).__name__}: {exc}'}
+    geometry['e5_tesseract'] = e5_result
+    if e5_result['status'] in ('error', 'unavailable'):
+        geometry['warnings'].append('Резервный Tesseract для проблемных цифр недоступен; проверьте результат.')
+    for detail in e5_result['details']:
+        observations = ', '.join(a['text'] or 'нет результата' for a in detail['attempts'])
+        processing_log.append({'type':'retry', 'stage':'E5 Tesseract KAZ', **detail,
+            'message':f"Строка {detail['row_id']}, {detail['column_id']}: Tesseract прочитал {observations}; "
+                      f"{'принято' if detail['accepted'] else 'сохранено для проверки'}."})
+    if e5_result['status'] in ('error', 'unavailable'):
+        processing_log.append({'type':'warning', 'stage':'E5 Tesseract KAZ',
+                               'message':f"Резервное чтение недоступно: {e5_result.get('error')}"})
     # E1: finish the normal OCR pipeline first.  Do not mutate its numbers;
     # independent source-pixel observations form alternatives for a bounded
     # candidate matrix, not automatic replacements.
     if e4_enabled:profile.phase('Сверка матрицы чисел')
-    numeric_book_export = {'cells': {}, 'footer': []}
+    e5_book = CandidateBook()
+    for candidate in e5_result['candidates']:
+        e5_book.add(candidate['row_id'], candidate['field'], candidate['text'], None,
+                    'e5_'+candidate['variant'], model='tesseract_kaz')
+    numeric_book_export = e5_book.export()
     numeric_matrix = {'status':'not_run' if e4_enabled else 'disabled', 'review_required':e4_enabled}
     original_roi_experiment = {}
     numeric_auto_corrections = {'status':'not_run','changes':[]}
@@ -651,6 +673,9 @@ def _process(data, profile, job_dir, rectify):
                          model=candidate.get('model_id','v5_cyrillic_mobile'))
             if candidate_failures:
                 geometry['warnings'].append('Не удалось собрать все резервные OCR-варианты чисел; проверьте результат.')
+            for candidate in e5_result['candidates']:
+                book.add(candidate['row_id'], candidate['field'], candidate['text'], None,
+                         'e5_'+candidate['variant'], model='tesseract_kaz')
             seed = seed_printed_vat(rows, book)
             vat_evidence = {'source':seed['source'], 'source_status':seed['status'],
                             'observations':[], 'probes':0, 'errors':[]}
@@ -713,6 +738,37 @@ def _process(data, profile, job_dir, rectify):
                     if second_pass['recognitions']:
                         numeric_matrix = solve_matrix(rows, book, vat_rate,
                             max_nodes=positive_int('OCR_MATRIX_MAX_NODES',100000))
+            # E4 may only now have observed letters/symbols in a numeric cell.
+            # Give those cells the remaining E5 budget before the final solve.
+            e5_seen = {(d['row_id'], d['column_id']) for d in e5_result['details']}
+            try:
+                late_e5 = recover_with_tesseract(
+                    rows, crop_map, {}, book=book, exclude_keys=e5_seen,
+                    max_cells=max(0, 3-len(e5_seen)), accept_invalid=False)
+            except Exception as exc:
+                late_e5 = {'status':'error', 'details':[], 'candidates':[],
+                           'error':f'{type(exc).__name__}: {exc}'}
+            geometry['e5_tesseract']['after_e4'] = late_e5
+            if late_e5['status'] == 'completed':
+                e5_result['status'] = 'completed'
+            if late_e5['status'] == 'budget_exhausted':
+                geometry['warnings'].append('Не все числовые ячейки с символами проверены Tesseract: исчерпан лимит.')
+                processing_log.append({'type':'warning', 'stage':'E5 Tesseract KAZ после E4',
+                    'message':'Не все числовые ячейки с символами проверены: исчерпан лимит Tesseract.'})
+            for detail in late_e5['details']:
+                observations = ', '.join(a['text'] or 'нет результата' for a in detail['attempts'])
+                processing_log.append({'type':'retry', 'stage':'E5 Tesseract KAZ после E4', **detail,
+                    'message':f"Строка {detail['row_id']}, {detail['column_id']}: Tesseract прочитал {observations}; варианты переданы в матрицу."})
+            if late_e5['status'] in ('error', 'unavailable'):
+                geometry['warnings'].append('Tesseract недоступен для дополнительной проверки цифр после E4.')
+                processing_log.append({'type':'warning', 'stage':'E5 Tesseract KAZ после E4',
+                    'message':f"Резервное чтение недоступно: {late_e5.get('error')}"})
+            for candidate in late_e5['candidates']:
+                book.add(candidate['row_id'], candidate['field'], candidate['text'], None,
+                         'e5_'+candidate['variant'], model='tesseract_kaz')
+            if late_e5['candidates']:
+                numeric_matrix = solve_matrix(rows, book, vat_rate,
+                    max_nodes=positive_int('OCR_MATRIX_MAX_NODES',100000))
             # Display only a VAT figure that was actually observed by OCR.
             if numeric_matrix.get('status') == 'unique_math_match' and numeric_matrix.get('solutions'):
                 printed_vat_observed = (observed_vat_text(

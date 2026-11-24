@@ -351,7 +351,7 @@ def build_grid(image, *, rectify=False, phase=None):
                     safety.get('source_valid_fraction', 1) < .995 or
                     geometry.get('unresolved_extreme_horizontal', 0) > 0):
                 raise ValueError('local mesh failed safety/geometry checks')
-            geometry['method'] = 'LocalGrid PaperGuard V2 · Physical V2'
+            geometry['method'] = 'LocalGrid PaperGuard V3 · Physical V2'
             geometry['local_grid_roi'] = stats
             if debug is not None and stats is not None:
                 debug.add_geometry('local_grid_roi', stats.get('total_ms',(_local_clock()-start)*1000), stats)
