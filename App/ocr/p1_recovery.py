@@ -1,8 +1,8 @@
 """Selective numeric OCR recovery with an audit trail.
 
-Never fabricate missing digits from arithmetic. An OCR alternative can replace
-an existing value only when an independently printed row total supports it.
-Otherwise it remains a visible candidate, not an automatic correction.
+Never fabricate missing digits from arithmetic. A valid retry can replace an
+invalid reading without a printed row total; other replacements require an
+independently printed row total to support them.
 """
 from decimal import Decimal
 import cv2
@@ -45,7 +45,7 @@ def _recalculate(row):
 
 
 def _consider(row, field, image, reason):
-    """Save original and alternative, accept only on independent row agreement."""
+    """Save both readings and accept a valid retry according to available evidence."""
     original = row['cells'][field]
     alternative = _retry(original, image)
     old = parse_number(original['text'])
@@ -61,6 +61,12 @@ def _consider(row, field, image, reason):
     if new is None or new == old or alternative['confidence'] < .70:
         return False, tried
     if 'printed_total' not in row['cells']:
+        if old is None and reason == 'invalid_number':
+            row['cells'][field] = alternative
+            _recalculate(row)
+            tried.update(accepted=True, confirmation='valid_retry_without_printed_row_total')
+            alternative['ocr_attempts'] = attempts
+            return True, tried
         return False, tried
     # A low-confidence printed figure is not sufficient verification.
     printed_evidence = alternative if field == 'printed_total' else row['cells']['printed_total']
@@ -115,7 +121,9 @@ def recover_invalid_and_rows(rows, crop_map, *, max_retries=8):
         accepted, info = _consider(row, field, crop_map[(row['row_id'],field)],reason)
         details.append({'row_id':row['row_id'], 'column_id':field, **info})
         if accepted:
-            changed.append((row['row_id'], field, 'printed_row_match'))
+            changed.append((row['row_id'], field, 'printed_row_match' if
+                            info['confirmation'] == 'independent_printed_row_total' else
+                            info['confirmation']))
         elif info['different'] and info['alternative_confidence'] >= .70:
             candidates.append({'row_id':row['row_id'], 'field':field,
                                'text':info['alternative_text'], 'reason':reason})

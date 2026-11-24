@@ -36,3 +36,29 @@ def test_total_match_alone_does_not_authorize_correction(monkeypatch):
     assert result['changed']==[]
     assert result['candidates'][0]['text']=='300'
     assert row['cells']['price']['ocr_attempts'][0]['accepted'] is False
+
+
+def test_invalid_number_accepts_valid_retry_without_printed_row_total(monkeypatch):
+    row = make_row(qty='2.', price='1060')
+    del row['cells']['printed_total']
+    monkeypatch.setattr(p1_recovery, '_retry', lambda original, image: dict(
+        text='2', confidence=.97, bbox=original['bbox'], row_id=1,
+        column_id=original['column_id']))
+    source = {(1, 'quantity'): np.full((30, 35, 3), 255, np.uint8)}
+    result = p1_recovery.recover_invalid_and_rows([row], source, max_retries=1)
+    assert row['cells']['quantity']['text'] == '2'
+    assert row['line_total'] == '2120'
+    assert result['changed'] == [(1, 'quantity', 'valid_retry_without_printed_row_total')]
+    assert row['cells']['quantity']['ocr_attempts'][0]['original_text'] == '2.'
+    assert result['details'][0]['accepted'] is True
+
+
+def test_invalid_retry_does_not_replace_number_when_printed_row_total_disagrees(monkeypatch):
+    row = make_row(qty='2.', price='1060', printed='3000')
+    monkeypatch.setattr(p1_recovery, '_retry', lambda original, image: dict(
+        text='2', confidence=.97, bbox=original['bbox'], row_id=1,
+        column_id=original['column_id']))
+    source = {(1, 'quantity'): np.full((30, 35, 3), 255, np.uint8)}
+    result = p1_recovery.recover_invalid_and_rows([row], source, max_retries=1)
+    assert row['cells']['quantity']['text'] == '2.'
+    assert result['details'][0]['accepted'] is False
