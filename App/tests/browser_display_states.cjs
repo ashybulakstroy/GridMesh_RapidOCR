@@ -9,7 +9,7 @@ const path = require('path');
   const img='data:image/png;base64,'+fs.readFileSync(path.join(__dirname,'fixtures/price_1120_border.png')).toString('base64');
   const warning='Есть альтернативные варианты OCR чисел, требующие проверки.';
   const prices=[1980,2350,8380,550,470,980,560,570,1120,2400,3180,2300,1];
-  const data={original:img,rectified:img,total:'29464',job_directory:'test',
+  const data={original:img,rectified:img,total:'29464',job_directory:'test',problem_text:{suspects:2},
     rows:prices.map((price,i)=>({row_id:i+1,kind:i===12?'tax':'product',cells:{
       number:{text:i===12?'':String(i+1),derived:true},name:{text:i===12?'НДС 16%':`Товар ${i+1}`,confidence:.95},
       quantity:{text:String(i===12?4064:i===6?2:1),confidence:.96},price:{text:String(price),confidence:.91}}})),
@@ -25,6 +25,10 @@ const path = require('path');
   await page.locator('#file').setInputFiles(path.join(__dirname,'fixtures/price_1120_border.png'));
   await page.locator('#run').click();
   await page.locator('#result:not([hidden])').waitFor();
+  if(!await page.locator('#text-review').isVisible() || !(await page.locator('#text-review').innerText()).includes('2 строк'))throw Error('Text review notice missing');
+  if(await page.locator('#text-review a').count())throw Error('Unexpected text report link');
+  await page.evaluate(()=>{current.problem_text=null;render();});
+  if(await page.locator('#text-review').isVisible())throw Error('Text review notice did not clear');
   if(!await page.locator('#correction-log').isVisible())throw Error('Processing log missing');
   if(!/120 → 1120/.test(await page.locator('#correction-log').innerText()))throw Error('Retry details missing');
   if(!/processing_log.json/.test(await page.locator('#correction-log-file').innerText()))throw Error('Processing log file missing');

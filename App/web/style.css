@@ -11,3 +11,6 @@
 #receipt-editor{border:1px solid #d2dceb;border-radius:8px;padding:12px;margin-bottom:16px}
 #receipt-editor>summary{color:#165ab6}
 #receipt-editor[open]>summary{margin-bottom:12px}
+#text-review:not([hidden]){margin:12px 0;padding:10px 12px;border-radius:8px;background:#fff3d7;color:#754400}
+
+#receipt-view td.text-review-yellow, #result input.text-review-yellow{background:#fff1a8!important;color:#302700!important;}

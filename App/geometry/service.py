@@ -272,6 +272,7 @@ def _build_grid_core(image, *, rectify=False, phase=None, pre_detected=None):
                          'cell_mesh':mesh(image, data, sample_image=False), 'source_image':image})
     else:
         result = mesh(image, data)
+        result.info['source_grid'] = data  # Grid Anomaly V3: preserve rules for direct repair
     if _debug is not None:
         _debug.add_geometry('grid_mesh_construction',(perf_counter()-_mesh_t0)*1000,
                             {'rectify_full_grid':bool(rectify)})

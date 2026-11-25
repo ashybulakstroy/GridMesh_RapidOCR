@@ -5,6 +5,42 @@ import cv2
 import numpy as np
 from ..config import setting
 
+FLAG_LABELS = {
+    'empty_name': 'Наименование не распознано.',
+    'low_confidence': 'Низкая уверенность в итоговом распознавании наименования.',
+    'unfinished_suffix': 'Текст заканчивается дефисом или косой чертой: возможно, он обрезан.',
+    'mixed_script_word': 'В одном слове смешаны кириллические и латинские буквы; проверьте похожие символы.',
+    'possible_missing_line': 'На фото возможно больше строк текста, чем выделено при распознавании.',
+    'short_multiline_name': 'На фото видно несколько строк, но распознанный текст короткий.',
+    'ocr_exception': 'Одна из попыток распознавания завершилась ошибкой.',
+    'v5_route_or_fallback': 'Использовалась модель V5: проверьте результат резервного чтения.',
+    'low_attempt_confidence': 'У одной из попыток распознавания низкая уверенность.',
+    'vat_name_uncertain': 'Не удалось уверенно отличить наименование товара от строки НДС.',
+}
+
+def render_text_report(directory, payload):
+    """Render explanations from saved evidence, including older manifests."""
+    esc=lambda x: html.escape(str(x))
+    def pic(value):
+        return f'<a href="{esc(value["file"])}"><img style="max-width:450px;max-height:180px" src="{esc(value["file"])}"></a>' if value else 'Изображение не сохранено'
+    records=payload.get('records', [])
+    suspects=payload.get('suspects', sum(bool(r.get('flags')) for r in records))
+    reason = (f'Отчёт создан: признаки возможной ошибки найдены в {suspects} из {payload.get("checked", len(records))} наименований.'
+              if suspects else 'Отчёт создан принудительно для диагностики; признаки возможной ошибки не обнаружены.')
+    chunks=['<!doctype html><html lang="ru"><meta charset="utf-8"><title>Проверка распознавания текста</title><style>body{font:15px Arial;margin:24px}section{border:1px solid #aaa;padding:12px;margin:12px 0}img{display:block;margin:5px 0}li{margin:4px 0}</style><h1>Проверка распознавания текста</h1>',
+            f'<p><strong>{esc(reason)}</strong> Признаки указывают, что текст стоит проверить; они не доказывают ошибку.</p>',
+            f'<p>Порог уверенности: {esc(payload.get("threshold", "—"))}. Пропущено изображений из-за лимита: {esc(payload.get("capture_dropped", 0))}.</p>']
+    for r in records:
+        flags=r.get('flags', [])
+        labels=[FLAG_LABELS.get(flag, 'Другой признак для проверки: '+str(flag)) for flag in flags]
+        reason_html='<ul>'+''.join('<li>'+esc(label)+'</li>' for label in labels)+'</ul>' if labels else '<p>Признаков ошибки не обнаружено; ячейка сохранена для общего контекста.</p>'
+        chunks.append(f'<section><h2>Строка {esc(r.get("row_id"))}: {esc(r.get("final",{}).get("text", ""))}</h2><strong>Причина проверки:</strong>'+reason_html+'<p>Ячейка / область исходного фото</p>'+pic(r.get('cell_image'))+pic(r.get('source_polygon_image')))
+        for e in r.get('attempts', []):
+            chunks.append(f'<p>{esc(e.get("model_id", "—"))} | {esc(e.get("mode", "—"))} | распознано: {esc(e.get("texts"))} | уверенность: {esc(e.get("confidences"))} | {esc(e.get("wall_ms", "—"))} мс</p>'+pic(e.get('input')))
+        chunks.append('</section>')
+    chunks.append('<p><a href="manifest.json">Подробные данные JSON</a></p></html>')
+    (Path(directory)/'report.html').write_text('\n'.join(chunks), encoding='utf-8')
+
 def enabled(): return setting('OCR_TEXT_DEBUG_ENABLE','1') == '1'
 
 def bands(image):
@@ -33,20 +69,29 @@ def reasons(item, image, events, threshold=.8):
     return out,b
 
 def save_text_debug(job_dir, rows, requests, source, rect, columns, trace, inputs, dropped):
-    if not enabled(): return None
+    from . import text_quality_gate as tqg
+    v3=tqg.enabled()
+    if not enabled() and not v3: return None
     start=time.perf_counter(); threshold=float(setting('OCR_TEXT_DEBUG_MIN_CONF','0.80'))
     if not 0<=threshold<=1: raise ValueError('OCR_TEXT_DEBUG_MIN_CONF must be 0..1')
     cells={c.row_id:c for c in requests if c.column_id=='name'}
     records=[]
+    checked=0
     for row in rows:
         if row.get('kind')!='product': continue
         rid=row['row_id']; c=cells.get(rid)
         if c is None: continue
+        checked+=1
         item=row['cells']['name']; key=f'{rid}:name'
         events=[e for e in trace.get('events',[]) if key in e.get('cells',[])]
-        flags,b=reasons(item,c.image,events,threshold)
+        flags,b=(tqg.selected_reasons(item,c.image,events,threshold,bands_fn=bands) if v3 else reasons(item,c.image,events,threshold))
+        if v3:
+            item['text_review_required']=bool(flags)
+            item['text_review_reasons']=flags
+            if not flags: continue
         records.append({'row_id':rid,'flags':flags,'estimated_ink_bands':b,'final':item,'events':events,'offset':c.offset,'source_bbox':c.source_bbox})
     suspects=sum(bool(r['flags']) for r in records)
+    if v3 and (not suspects or not enabled()): return None
     if not suspects and setting('OCR_TEXT_DEBUG_FORCE','0')!='1': return None
     from .experiment_original import OriginalNumericCache
     from .experiment_models import load_catalog
@@ -79,16 +124,8 @@ def save_text_debug(job_dir, rows, requests, source, rect, columns, trace, input
     for name in ('rapidocr','onnxruntime','opencv-python','numpy'):
         try: versions[name]=metadata.version(name)
         except metadata.PackageNotFoundError: versions[name]='not_installed'
-    payload={'schema':'text-ocr-debug-v1','suspects':suspects,'count':len(records),'threshold':threshold,'records':records,'capture_dropped':dropped,'errors':errors+cache.errors,'versions':versions,'model_catalog':load_catalog(),'configuration':{k:setting(k,v) for k,v in {'OCR_TABLE_MODE':'cell','OCR_ONNX_THREADS':'2','OCR_TABLE_ONNX_THREADS':setting('OCR_ONNX_THREADS','2'),'OCR_NAME_ENGLISH_FALLBACK':'0','OCR_TEXT_DEBUG_ENABLE':'1'}.items()},'notes':['Flags are heuristic; no ground truth or CER is inferred.','Actual public OCR API inputs, not internal ONNX tensors. DET+REC internal line crops are opaque. Source polygon images are diagnostic reconstructions.']}
-    def esc(x): return html.escape(str(x))
-    def pic(v): return f'<a href="{esc(v["file"])}"><img style="max-width:450px;max-height:180px" src="{esc(v["file"])}"></a>' if v else 'not captured'
-    chunks=['<!doctype html><meta charset=utf-8><title>Text OCR debug</title><style>body{font:15px Arial;margin:24px}section{border:1px solid #aaa;padding:12px;margin:12px 0}img{display:block;margin:5px 0}pre{white-space:pre-wrap}</style><h1>Text OCR debug</h1>',f'<p>Suspects: {suspects} / {len(records)} · dropped: {dropped}</p>']
-    for r in records:
-        chunks.append(f'<section><h2>Row {r["row_id"]}: {esc(r["final"].get("text"))}</h2><p>{esc(r["flags"])}</p><p>Cell / source polygon</p>'+pic(r['cell_image'])+pic(r['source_polygon_image']))
-        for e in r.get('attempts',[]): chunks.append(f'<p>{esc(e["model_id"])} | {esc(e["mode"])} | {esc(e.get("texts"))} | {esc(e.get("confidences"))} | {e["wall_ms"]} ms</p>'+pic(e['input']))
-        chunks.append('</section>')
-    chunks.append('<p><a href="manifest.json">JSON manifest</a></p>')
-    (directory/'report.html').write_text('\n'.join(chunks),encoding='utf-8')
+    payload={'schema':'text-ocr-debug-v1','suspects':suspects,'count':len(records),'checked':checked,'threshold':threshold,'records':records,'capture_dropped':dropped,'errors':errors+cache.errors,'versions':versions,'model_catalog':load_catalog(),'configuration':{k:setting(k,v) for k,v in {'OCR_TABLE_MODE':'cell','OCR_ONNX_THREADS':'2','OCR_TABLE_ONNX_THREADS':setting('OCR_ONNX_THREADS','2'),'OCR_NAME_ENGLISH_FALLBACK':'0','OCR_TEXT_DEBUG_ENABLE':'1'}.items()},'notes':['Flags are heuristic; no ground truth or CER is inferred.','Actual public OCR API inputs, not internal ONNX tensors. DET+REC internal line crops are opaque. Source polygon images are diagnostic reconstructions.']}
+    render_text_report(directory, payload)
     payload['save_wall_ms']=round((time.perf_counter()-start)*1000,3)
     (directory/'manifest.json').write_text(json.dumps(payload,ensure_ascii=False,indent=2,default=lambda o:o.tolist() if hasattr(o,'tolist') else str(o)),encoding='utf-8')
-    return {'count':len(records),'suspects':suspects,'report':str(directory/'report.html'),'save_wall_ms':payload['save_wall_ms'],'capture_dropped':dropped}
+    return {'count':len(records),'suspects':suspects,'report':'problem_text/report.html','save_wall_ms':payload['save_wall_ms'],'capture_dropped':dropped}

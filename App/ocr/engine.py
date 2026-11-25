@@ -276,6 +276,12 @@ def read_cell(image, row_id, column_id, offset, *, force_single=False):
     token = _NAME_MODEL.set(model)
     last_token = _LAST_REC_MODEL.set(None)
     try:
+        fast_mode = setting('OCR_TEXT_FAST_MODE','E').upper()
+        if column_id == 'name' and not force_single and fast_mode != 'A' and (fast_mode == 'G' or row_id != _TEXT_LAST_ROW.get()):
+            from .text_selective import read_name
+            return read_name(image, row_id, column_id, offset, primary=_run_cyrillic_rec,
+                             secondary=_text_selective_v5, last_model=_LAST_REC_MODEL.get,
+                             lock=_lock, full=read_full)
         result = _read_cell(image, row_id, column_id, offset, force_single=force_single)
         result['model_id'] = _LAST_REC_MODEL.get() or 'v5_cyrillic_mobile'
         return result
@@ -357,3 +363,16 @@ def _read_cell(image, row_id, column_id, offset, *, force_single=False):
             'bbox': [offset[0], offset[1], offset[0]+image.shape[1], offset[1]+image.shape[0]],
             'cell_id': f'{row_id}-{column_id}', 'row_id': row_id,
             'column_id': column_id, 'blocks': lines}
+
+_TEXT_LAST_ROW = ContextVar('text_fast_last_row', default=None)
+
+def _text_selective_v5(image):
+    start=perf_counter()
+    try:
+        result=engine()(image,use_det=False,use_cls=False)
+        _LAST_REC_MODEL.set('v5_cyrillic_mobile')
+        record_rec(model='v5_cyrillic_mobile',ms=(perf_counter()-start)*1000,image=image,result=result)
+        return result
+    except Exception as exc:
+        record_rec(model='v5_cyrillic_mobile',ms=(perf_counter()-start)*1000,success=False,note=str(exc),image=image)
+        raise

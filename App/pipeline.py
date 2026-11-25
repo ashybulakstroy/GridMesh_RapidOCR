@@ -386,8 +386,6 @@ def _process(data, profile, job_dir, rectify):
                                'message':f'Восстановлены линии сетки у перегиба: {count}.'})
     if len(candidates)>1 and score < 1:
         geometry['warnings'].append('Ориентация не подтверждена по заголовку; проверьте фото.')
-    (job_dir/'rectified.png').write_bytes(cv2.imencode('.png', overlay)[1].tobytes())
-    profile.publish({'preview_ready': True, 'rectification': geometry['rectification']})
     geo_s = time.perf_counter() - started
     ocr_start = time.perf_counter()
     profile.phase('Подготовка OCR и чтение ячеек')
@@ -449,10 +447,89 @@ def _process(data, profile, job_dir, rectify):
         xs=[int(round(x)) for x in rect.xs]
         ys=[int(round(y)) for y in rect.ys]
         footer_focus_guide=guide_from_grid(rect,image.shape)
-        (job_dir/'rectified.png').write_bytes(cv2.imencode('.png',overlay)[1].tobytes())
-        profile.publish({'preview_ready':True,'rectification':geometry['rectification']})
         processing_log.append({'type':'operation','stage':'V12 PaperFirst recovery',
             'message':'Частичная таблица отклонена; использована полная сетка по бумаге.'})
+    # GRID_ANOMALY_V3: independent source coverage and printed ordinals.
+    # Run on every selected route (including SMART/full-image fallback),
+    # before publishing preview or starting expensive product OCR.
+    if setting('OCR_GRID_ANOMALY_V3','1') == '1':
+        import json as _grid_json
+        from .geometry.grid_anomaly_v3 import audit_grid, build_direct
+        from .geometry.service import build_grid_paper_rescue, build_grid_source_rescue
+        profile.phase('Контроль полноты сетки и первого номера')
+        _grid_gate = audit_grid(image,rect,geometry,crop=cell_crop,read=read_line,
+                                number_col=columns.get('number'))
+        _grid_trace = {'initial':_grid_gate,'attempts':[],'status':_grid_gate['status']}
+        _grid_gate_file = job_dir/'grid_anomaly.json'
+        def _grid_save():
+            _grid_gate_file.write_text(_grid_json.dumps(_grid_trace,ensure_ascii=False,indent=2),encoding='utf-8')
+        if _grid_gate['status'] != 'pass':
+            (job_dir/'grid_anomaly_initial.png').write_bytes(cv2.imencode('.png',overlay)[1].tobytes())
+        # Only confirmed geometric anomalies trigger repair.
+        if _grid_gate['status']=='suspect':
+            _grid_fixed = False
+            def _grid_direct_builder(*args, **kwargs):
+                if 'invalid_mesh_geometry' in _grid_gate['reasons']:
+                    raise ValueError('direct_repair_requires_valid_lower_grid')
+                _direct = build_direct(image,rect,geometry,_grid_gate['source_extension'],rectify=rectify)
+                if not _v12_validate_header(_direct[0]):
+                    raise ValueError('direct_header_not_confirmed')
+                return _direct
+            for _grid_route,_grid_builder in (('direct_anchor_v3',_grid_direct_builder),
+                                               ('source_v16',build_grid_source_rescue),
+                                               ('paper_v12',build_grid_paper_rescue)):
+                _grid_attempt = {'route':_grid_route}
+                _grid_trace['attempts'].append(_grid_attempt)
+                try:
+                    _grid_candidate = _grid_builder(image,rectify=rectify,phase=profile.phase,
+                                                     header_validator=_v12_validate_header)
+                except (ValueError,cv2.error,TypeError,IndexError) as _ge:
+                    _grid_attempt.update(status='rejected',error=str(_ge))
+                    continue
+                if _grid_candidate is None:
+                    _grid_attempt['status']='no_candidate'
+                    _grid_save()
+                    continue
+                _gr,_go,_gg = _grid_candidate
+                try:
+                    _gc = _v12_read_columns(_gr,rescued=False)  # rescue builder already verified header
+                    _ga = audit_grid(image,_gr,_gg,crop=cell_crop,read=read_line,
+                                     number_col=_gc.get('number'),force_number=True)
+                except (ValueError,cv2.error) as _ge:
+                    _grid_attempt.update(status='rejected',error=str(_ge))
+                    _grid_save()
+                    continue
+                _grid_attempt['audit']=_ga
+                if _gg.get('direct_anchor_v3'):
+                    _grid_attempt['direct_recovery'] = _gg['direct_anchor_v3']
+                if _ga['status']!='pass':
+                    _grid_attempt['status']='rejected'
+                    _grid_save()
+                    continue
+                rect,overlay,geometry,columns = _gr,_go,_gg,_gc
+                _grid_gate = _ga
+                _grid_attempt['status']='accepted'
+                _grid_trace['status']='recovered'
+                _grid_fixed=True
+                processing_log.append({'type':'operation','stage':'Grid Anomaly V3',
+                     'message':'Неполная или повреждённая сетка заменена после проверки исходных линий, шапки и первого номера.'})
+                break
+            if not _grid_fixed:
+                _grid_trace['status']='rejected'
+                _grid_save()
+                raise ValueError('Grid Anomaly V3: сетка не подтверждена; '+
+                                 ', '.join(_grid_gate['reasons'] or ['геометрический дефект'])+
+                                 '. Подробности: grid_anomaly.json')
+        _grid_trace['final']=_grid_gate
+        geometry['grid_anomaly_v3']=_grid_trace
+        _grid_save()
+        xs=[int(round(x)) for x in rect.xs]
+        ys=[int(round(y)) for y in rect.ys]
+        footer_focus_guide=guide_from_grid(rect,image.shape)
+    (job_dir/'rectified.png').write_bytes(cv2.imencode('.png',overlay)[1].tobytes())
+    profile.publish({'preview_ready':True,'rectification':geometry['rectification']})
+    geo_s = time.perf_counter() - started
+    ocr_start = time.perf_counter()
     geometry['columns'] = columns
     # First band is the table header. All subsequent bands are physical rows.
     # P1: extract each cell once, then submit single-line recognition in batches.
@@ -475,28 +552,33 @@ def _process(data, profile, job_dir, rectify):
             cell_requests.append(BatchCell(crop, idx, field, offset, source_bbox))
             if field in ('quantity','price','printed_total'):
                 crop_map[(idx,field)] = crop
-    parallel_footer = None
-    if ocr_mode == 'cell':
-        profile.phase('Поячеечный OCR: итог, названия и цифры параллельно'
-                      if setting('OCR_TABLE_PARALLEL', '1') == '1'
-                      else 'Поячеечный OCR: итог и таблица параллельно')
-        def read_footer_and_candidates():
-            footer_start = time.perf_counter()
-            footer_result = read_printed_footer(image, table_source_bottom(rect,xs,ys), footer_guide=footer_focus_guide)
-            footer_result['footer_read_ms'] = round((time.perf_counter()-footer_start)*1000,3)
-            if e4_enabled and not adaptive_enabled and setting('OCR_E4_FAST_GATE','1') != '1':
-                candidate_start = time.perf_counter()
-                footer_result['numeric_candidates'] = collect_v5_candidates(crop_map)
-                footer_result['candidate_read_ms'] = round((time.perf_counter()-candidate_start)*1000,3)
-            return footer_result
-        readouts, batch_stats, parallel_footer = read_parallel(
-            cell_requests, read_footer_and_candidates,
-            read_cells, batch_size=positive_int('OCR_REC_BATCH_NUM',8))
-    else:
-        profile.phase('OCR P1: пакетный RapidOCR')
-        table_started = time.perf_counter()
-        readouts, batch_stats = read_batches(cell_requests, batch_size=positive_int('OCR_REC_BATCH_NUM',8))
-        batch_stats['table_wall_ms'] = round((time.perf_counter()-table_started)*1000,3)
+    from .ocr.engine import _TEXT_LAST_ROW
+    text_last_token = _TEXT_LAST_ROW.set(body_row_count)
+    try:
+        parallel_footer = None
+        if ocr_mode == 'cell':
+            profile.phase('Поячеечный OCR: итог, названия и цифры параллельно'
+                          if setting('OCR_TABLE_PARALLEL', '1') == '1'
+                          else 'Поячеечный OCR: итог и таблица параллельно')
+            def read_footer_and_candidates():
+                footer_start = time.perf_counter()
+                footer_result = read_printed_footer(image, table_source_bottom(rect,xs,ys), footer_guide=footer_focus_guide)
+                footer_result['footer_read_ms'] = round((time.perf_counter()-footer_start)*1000,3)
+                if e4_enabled and not adaptive_enabled and setting('OCR_E4_FAST_GATE','1') != '1':
+                    candidate_start = time.perf_counter()
+                    footer_result['numeric_candidates'] = collect_v5_candidates(crop_map)
+                    footer_result['candidate_read_ms'] = round((time.perf_counter()-candidate_start)*1000,3)
+                return footer_result
+            readouts, batch_stats, parallel_footer = read_parallel(
+                cell_requests, read_footer_and_candidates,
+                read_cells, batch_size=positive_int('OCR_REC_BATCH_NUM',8))
+        else:
+            profile.phase('OCR P1: пакетный RapidOCR')
+            table_started = time.perf_counter()
+            readouts, batch_stats = read_batches(cell_requests, batch_size=positive_int('OCR_REC_BATCH_NUM',8))
+            batch_stats['table_wall_ms'] = round((time.perf_counter()-table_started)*1000,3)
+    finally:
+        _TEXT_LAST_ROW.reset(text_last_token)
     geometry['ocr_mode'] = ocr_mode
     geometry['ocr_batch'] = batch_stats
     if ocr_mode == 'batch' and debug_perf is not None:
@@ -508,6 +590,8 @@ def _process(data, profile, job_dir, rectify):
         geometry['warnings'].append('Пакетный OCR был частично заменён поячейковым: ' + '; '.join(batch_stats['errors'][:2]))
         processing_log.append({'type':'operation', 'stage':'Пакетный OCR',
                                'message':f"Пакетный OCR заменён поячейковым для {batch_stats['batch_fallback']} ячеек."})
+    from .ocr import text_quality_gate as tqg
+    text_review_v3 = tqg.enabled()
     profile.phase('OCR P1: сборка товарных строк')
     for idx in range(1, body_row_count+1):
         k = columns['number']
@@ -518,15 +602,40 @@ def _process(data, profile, job_dir, rectify):
             'bbox':[xs[k],ys[idx],xs[k+1],ys[idx+1]],
             'source_bbox':[], 'blocks':[]}}
         cells.update({field:readouts[(idx,field)] for field in field_order})
-        if idx == body_row_count and not re.search(r'[нh][дd][сc]|vat',cells['name']['text'],re.I):
-            # VAT name may be split across several observed printed fragments.
-            old = cells['name']
-            candidate = next(c for c in cell_requests if c.row_id == idx and c.column_id == 'name')
-            with rec_scope([(idx,'name')], 'vat_name_retry'):
-                alternate = read_cell(candidate.image, idx, 'name', candidate.offset, force_single=True)
-            if re.search(r'[нh][дd][сc]|vat',alternate['text'],re.I):
-                alternate['source_bbox'] = candidate.source_bbox
-                cells['name'] = alternate
+        _grid_final = geometry.get('grid_anomaly_v3',{}).get('final',{})
+        _grid_observed = _grid_final.get('number_check',{}).get('observations',{}).get(idx)
+        if _grid_observed is not None:
+            cells['number']['printed_observation'] = _grid_observed
+        if text_review_v3:
+            if idx == body_row_count:
+                decision = tqg.plan(cells, rows, number, setting('OCR_VAT_RATE_PERCENT','16'))
+                cells['name']['vat_gate'] = decision
+                if decision == 'verify':
+                    candidate = next(c for c in cell_requests if c.row_id == idx and c.column_id == 'name')
+                    try:
+                        with rec_scope([(idx,'name')], 'vat_name_gate_retry'):
+                            alternate = tqg.verify(candidate, cells['name'], read_cell, read_full)
+                    except Exception as exc:
+                        alternate = None
+                        processing_log.append({'type':'error','stage':'VAT gate','message':str(exc)})
+                    if alternate and tqg.vat_marker(alternate['text']):
+                        alternate['source_bbox'] = candidate.source_bbox
+                        alternate['vat_gate'] = 'verified_marker'
+                        cells['name'] = alternate
+                    else:
+                        cells['name']['vat_name_review'] = True
+                elif decision == 'uncertain_no_retry':
+                    cells['name']['vat_name_review'] = True
+        else:
+            if idx == body_row_count and not re.search(r'[нh][дd][сc]|vat',cells['name']['text'],re.I):
+                # VAT name may be split across several observed printed fragments.
+                old = cells['name']
+                candidate = next(c for c in cell_requests if c.row_id == idx and c.column_id == 'name')
+                with rec_scope([(idx,'name')], 'vat_name_retry'):
+                    alternate = read_cell(candidate.image, idx, 'name', candidate.offset, force_single=True)
+                if re.search(r'[нh][дd][сc]|vat',alternate['text'],re.I):
+                    alternate['source_bbox'] = candidate.source_bbox
+                    cells['name'] = alternate
         name_text = cells['name']['text'].strip()
         if name_text and cells['name']['confidence'] < .5:
             geometry['warnings'].append(f'Строка {idx}: низкая уверенность в наименовании, проверьте текст.')
