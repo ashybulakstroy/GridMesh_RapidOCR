@@ -4,6 +4,8 @@ No GT, OCR, target row count or receipt identifiers enter this module. Existing
 warpers and V1 are retained verbatim for the diagnostic comparison.
 """
 from App.ocr.performance_deep.live_capture import timed as _deep_timed
+from App.ocr.performance_deep.live_capture import current as _deep_current, count as _deep_count
+from time import perf_counter_ns
 import cv2
 import numpy as np
 from scipy.signal import find_peaks
@@ -100,6 +102,7 @@ def trace_seed(response,seed,xs,dark=None):
     The seed fixes a source location in the middle, preventing a neighbouring
     stronger rule from replacing it. Returned paths are proposals until checked.
     """
+    _capture=_deep_current();_tick=perf_counter_ns() if _capture else 0;_steps={}
     x0,y0,x1,y1=seed;H,W=response.shape
     slope=(y1-y0)/max(abs(x1-x0),1)
     if x1<x0:slope=-slope
@@ -113,6 +116,8 @@ def trace_seed(response,seed,xs,dark=None):
     rewards[~valid]=-20
     anchor=int(np.argmin(abs(xs-(x0+x1)/2)))
     rewards[anchor,abs(offsets)>3]=-1e4
+    if _capture:
+        _now=perf_counter_ns();_steps['подготовка и выборка']=(_now-_tick)/1e6;_tick=_now
     score=rewards[0].copy();parents=np.zeros((N,K),np.int16)
     # Reuse one padded buffer and its five-neighbor views for every column.
     # The order matches shifts -2..2, including the original tie handling.
@@ -126,11 +131,15 @@ def trace_seed(response,seed,xs,dark=None):
         choice=np.argmax(candidates,axis=1)
         parents[i]=positions-(choice-2)
         score=candidates[positions,choice]+rewards[i]
+    if _capture:
+        _now=perf_counter_ns();_steps['поиск пути']=(_now-_tick)/1e6;_tick=_now
     index=int(np.argmax(score));indices=np.empty(N,int);indices[-1]=index
     for i in range(N-1,0,-1):indices[i-1]=parents[i,indices[i]]
     ys=base+offsets[indices]
     # Smooth subpixel noise only; no polynomial extrapolation beyond fragments.
     ys=cv2.GaussianBlur(ys.reshape(1,-1).astype(np.float32),(5,1),.8).ravel()
+    if _capture:
+        _now=perf_counter_ns();_steps['восстановление и сглаживание']=(_now-_tick)/1e6;_tick=_now
     # A printed edge varies smoothly across the sheet. Robust local ridge fitting
     # prevents a path from zigzagging through aligned glyphs and price digits.
     norm=(xs-(xs[0]+xs[-1])/2)/max(xs[-1]-xs[0],1)
@@ -140,6 +149,8 @@ def trace_seed(response,seed,xs,dark=None):
         residual=ys-A@coeff
         weight=np.minimum(1.,2.5/np.maximum(abs(residual),.001))
     ys=A@coeff
+    if _capture:
+        _now=perf_counter_ns();_steps['подгонка линии']=(_now-_tick)/1e6;_tick=_now
     if dark is not None:
         ix=np.rint(xs).astype(int).clip(0,W-1)
         def physical_coverage(path):
@@ -151,6 +162,9 @@ def trace_seed(response,seed,xs,dark=None):
         # straight rule. Both alternatives face the same junction tests below.
         if physical_coverage(base)>physical_coverage(ys)+.025:ys=base
     vals=response[np.rint(ys).astype(int).clip(0,H-1),np.rint(xs).astype(int).clip(0,W-1)]
+    if _capture:
+        _now=perf_counter_ns();_steps['проверка пикселей']=(_now-_tick)/1e6
+        _deep_count('grid_internal_timing',function='trace_seed',breakdown_ms=_steps,sample_points=N, offsets=K)
     return ys,vals
 
 

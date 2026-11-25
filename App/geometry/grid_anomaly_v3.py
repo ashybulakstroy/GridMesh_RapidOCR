@@ -373,14 +373,20 @@ def build_direct(image, rect, geometry, scan, *, rectify=False):
         raise ValueError('recovered_mesh_failed_safety')
     overlay=result.image.copy()
     if not rectify:
+        from ..config import setting as _overlay_setting
+        if _overlay_setting('OCR_GRID_OVERLAY_REUSE_V1','1')=='1':
+            from .grid_overlay_reuse_v1 import polygon_reader
+            _polygon=polygon_reader(result,nodes,cell_polygon)
+        else:
+            _polygon=lambda row,col:cell_polygon(result,row,col)
         for row in range(len(hs)):
             for col in range(len(vs)-1):
-                poly=cell_polygon(result,max(0,min(row,len(hs)-2)),col)
+                poly=_polygon(max(0,min(row,len(hs)-2)),col)
                 edge=poly[:17] if row<len(hs)-1 else poly[34:51]
                 cv2.polylines(overlay,[np.rint(edge).astype(np.int32)],False,(255,100,0),2,cv2.LINE_AA)
         for col in range(len(vs)):
             for row in range(len(hs)-1):
-                poly=cell_polygon(result,row,max(0,min(col,len(vs)-2)))
+                poly=_polygon(row,max(0,min(col,len(vs)-2)))
                 edge=poly[17:34] if col==len(vs)-1 else poly[51:68]
                 cv2.polylines(overlay,[np.rint(edge).astype(np.int32)],False,(255,100,0),2,cv2.LINE_AA)
     else:

@@ -3,7 +3,7 @@ const $=id=>document.getElementById(id);
 function selectPhoto(file){selected=file;if(file){$('original').src=URL.createObjectURL(file);$('photo-empty').hidden=true;$('status').textContent='Фото готово к обработке'}}
 $('file').onchange=e=>selectPhoto(e.target.files[0]);
 document.addEventListener('paste', e=>{const item=[...(e.clipboardData?.items||[])].find(x=>x.type.startsWith('image/'));if(!item)return;const file=item.getAsFile();if(!file)return;e.preventDefault();selectPhoto(file);if(running){pendingPaste=file;$('status').textContent='Фото из буфера в очереди на распознавание';}else{void runRecognition();}});
-function profileRows(samples){const target=$('profile-rows');target.replaceChildren();for(const item of samples||[]){const row=document.createElement('tr');row.classList.toggle('timing-slow',Number(item.wall_ms)>1000);for(const v of [item.name,(item.wall_ms/1000).toFixed(3),(item.process_cpu_ms/1000).toFixed(3)]){const td=document.createElement('td');td.textContent=v;row.append(td)}target.append(row)}}
+function profileRows(samples){const target=$('profile-rows');target.replaceChildren();for(const item of samples||[]){const row=document.createElement('tr');row.classList.toggle('timing-slow',Number(item.wall_ms)>500);for(const v of [item.name,(item.wall_ms/1000).toFixed(3),(item.process_cpu_ms/1000).toFixed(3)]){const td=document.createElement('td');td.textContent=v;row.append(td)}target.append(row)}}
 function updateTextReview(){
   const textReview=$('text-review'), rows=current?.rows||[];
   const hasFlags=rows.some(row=>row.cells?.name?.text_review_required!==undefined);

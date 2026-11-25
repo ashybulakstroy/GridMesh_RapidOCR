@@ -299,7 +299,40 @@ def _process_job(data, publish=None, job_id=None, *, rectify=False, rec_tracker)
     return result
 
 
+# ADAPTIVE_DETECTOR_ROUTING_V1
 def _process(data, profile, job_dir, rectify):
+    from .geometry import detector_routing_v1 as _route
+    _mode=setting('OCR_GRID_ROUTE_V1','auto')
+    # Never bypass V2 unless the existing anomaly guard is enabled.
+    if setting('OCR_GRID_ANOMALY_V3','1')!='1': _mode='legacy'
+    _state,_token=_route.start(_mode, int(setting('OCR_GRID_ROUTE_MIN_H','10')))
+    _retry=None
+    try:
+        try:
+            result=_process_route_body(data,profile,job_dir,rectify)
+        except (ValueError,cv2.error) as exc:
+            if not _route.can_retry(): raise
+            _route.record('legacy_retry',reason=str(exc))
+            _retry=str(exc)
+            # Only a pre-product-OCR error may enter this branch.
+            # Keep prior diagnostics under a distinct name, never publish partial rows.
+            for _filename in ('grid_anomaly.json','grid_anomaly_initial.png','rectified.png'):
+                _p=job_dir/_filename
+                if _p.exists(): _p.replace(job_dir/('routing_trial_'+_filename))
+            _state.mode='legacy'; _state.candidate_used=False
+            result=_process_route_body(data,profile,job_dir,rectify)
+        result.setdefault('geometry',{})['detector_routing_v1']={'requested_mode':_mode,'final_mode':_state.mode,'events':_state.events,'legacy_retry':_retry}
+        return result
+    finally:
+        try:
+            (job_dir/'detector_routing.json').write_text(__import__('json').dumps({'requested_mode':_mode,'final_mode':_state.mode,'events':_state.events,'legacy_retry':_retry},ensure_ascii=False,indent=2),encoding='utf-8')
+        except OSError:
+            pass  # diagnostic persistence must not mask original exception
+        finally:
+            _route.end(_token)
+
+
+def _process_route_body(data, profile, job_dir, rectify):
     started = time.perf_counter()
     e4_enabled = setting('OCR_E4_ENABLE','1') == '1'
     adaptive_enabled = e4_enabled and setting('OCR_E4_ADAPTIVE','1') == '1'
@@ -548,6 +581,24 @@ def _process(data, profile, job_dir, rectify):
         xs=[int(round(x)) for x in rect.xs]
         ys=[int(round(y)) for y in rect.ys]
         footer_focus_guide=guide_from_grid(rect,image.shape)
+    # GRID_SPEED_COMBINED_V1: premesh candidate never bypasses header or safety.
+    if geometry.get('combo_premesh'):
+        if geometry.get('grid_anomaly_v3',{}).get('final',{}).get('status')!='pass':
+            raise ValueError('combo premesh: repaired grid not confirmed')
+        # Existing adaptive guard below checks header unless V4 already did.
+        if geometry.get('grid_anomaly_v3',{}).get('status')=='recovered' and not _v12_validate_header(rect):
+            raise ValueError('combo premesh: repaired header not confirmed')
+    # ADAPTIVE_DETECTOR_ROUTING_V1: the existing gate must have run.
+    from .geometry import detector_routing_v1 as _route
+    if _route.used():
+        _final_trace=geometry.get('grid_anomaly_v3',{})
+        if _final_trace.get('final',{}).get('status')!='pass':
+            raise ValueError('routing: anomaly gate did not confirm candidate')
+        # Recovered candidates have already passed header validation.
+        if _final_trace.get('status')!='recovered' and not _v12_validate_header(rect):
+            raise ValueError('routing: printed header not confirmed')
+        _route.record('candidate_confirmed',status=_final_trace.get('status'))
+    _route.finish_geometry()
     (job_dir/'rectified.png').write_bytes(cv2.imencode('.png',overlay)[1].tobytes())
     profile.publish({'preview_ready':True,'rectification':geometry['rectification']})
     geo_s = time.perf_counter() - started

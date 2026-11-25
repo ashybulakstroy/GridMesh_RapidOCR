@@ -6,6 +6,8 @@ height or desired row count. Unsupported gaps remain explicitly inferred.
 """
 from __future__ import annotations
 from App.ocr.performance_deep.live_capture import timed as _deep_timed
+from App.ocr.performance_deep.live_capture import current as _deep_current, count as _deep_count
+from time import perf_counter_ns
 import cv2
 import numpy as np
 from .detection import (_candidate_lines, _fit_group, _group_and_fit,
@@ -21,18 +23,34 @@ def graph_verticals(rules,horizontals,width,height):
     row-count prior: count only measured fragments with both observed endpoints.
     """
     from itertools import combinations
+    _capture=_deep_current()
+    _start=perf_counter_ns() if _capture else 0
+    _screen_ns=_bounds_ns=_score_ns=0
+    _tried=_screened=0
     candidates=sorted(sorted(rules,key=lambda r:-r.support)[:20],key=lambda r:r.position)
+    _prepare_ns=perf_counter_ns()-_start if _capture else 0
     best=None
     for vv in combinations(candidates,5):
+        if _capture:_tick=perf_counter_ns();_tried+=1
         top=max(v.domain[0] for v in vv);bottom=min(v.domain[1] for v in vv)
-        if bottom-top<height*.06:continue
+        if bottom-top<height*.06:
+            if _capture:_screen_ns+=perf_counter_ns()-_tick
+            continue
         samples=(np.linspace(top,bottom,12)-height/2)/height
         observed=np.stack([v.eval(samples) for v in vv]);xs=np.median(observed,axis=1)
-        if np.min(np.diff(observed,axis=0))<5:continue
+        if np.min(np.diff(observed,axis=0))<5:
+            if _capture:_screen_ns+=perf_counter_ns()-_tick
+            continue
         span=xs[-1]-xs[0]
-        if not width*.18<span<width*.92:continue
+        if not width*.18<span<width*.92:
+            if _capture:_screen_ns+=perf_counter_ns()-_tick
+            continue
         ratios=np.diff(xs)/span
-        if not (.035<ratios[0]<.22 and .32<ratios[1]<.73 and .07<ratios[2]<.30 and .09<ratios[3]<.38):continue
+        if not (.035<ratios[0]<.22 and .32<ratios[1]<.73 and .07<ratios[2]<.30 and .09<ratios[3]<.38):
+            if _capture:_screen_ns+=perf_counter_ns()-_tick
+            continue
+        if _capture:
+            _screen_ns+=perf_counter_ns()-_tick;_tick=perf_counter_ns();_screened+=1
         bounded=[];endpoint_errors=[]
         for r in horizontals:
             if not top-8<=r.position<=bottom+8:continue
@@ -40,12 +58,19 @@ def graph_verticals(rules,horizontals,width,height):
             if abs(r.domain[0]-left)<span*.12 and abs(r.domain[1]-right)<span*.12:
                 bounded.append(r)
                 endpoint_errors.append((abs(r.domain[0]-left)+abs(r.domain[1]-right))/span)
+        if _capture:_bounds_ns+=perf_counter_ns()-_tick;_tick=perf_counter_ns()
         # De-duplicate thickness without collapsing neighbouring physical rows.
         positions=[]
         for r in sorted(bounded,key=lambda r:r.position):
             if not positions or r.position-positions[-1]>4:positions.append(r.position)
         score=len(positions)-2*np.sum(abs(ratios-[.10,.52,.16,.22]))-5*(float(np.mean(endpoint_errors)) if endpoint_errors else 1.)
         if best is None or score>best[0]:best=(score,list(vv),len(positions))
+        if _capture:_score_ns+=perf_counter_ns()-_tick
+    if _capture:
+        _deep_count('grid_internal_timing', function='graph_verticals',
+            breakdown_ms={'подготовка кандидатов':_prepare_ns/1e6,'проверка комбинаций':_screen_ns/1e6,
+                          'проверка горизонтальных границ':_bounds_ns/1e6,'оценка гипотез':_score_ns/1e6},
+            combinations=_tried, passed_screen=_screened, vertical_candidates=len(candidates), horizontal_candidates=len(horizontals))
     if best is None or best[2]<3:return None
     return best[1]
 

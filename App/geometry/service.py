@@ -189,7 +189,16 @@ def _build_grid_core(image, *, rectify=False, phase=None, pre_detected=None):
                               'autogrid_rejected' if data is None else 'insufficient_boundaries',
                      'autogrid_reason':report.get('reason'),
                      'detector_status':report.get('autogrid',{}).get('status')})
-            physical, physical_report = detect_physical_graph(image)
+            # ADAPTIVE_DETECTOR_ROUTING_V1: keep all other service paths unchanged.
+            from . import detector_routing_v1 as _route
+            _prefer=_route.choose(data,report,image)
+            _route.record('physical_route',prefer_multiscale=_prefer,autogrid_h=len(data['horizontal']) if data is not None else 0,autogrid_v=len(data['vertical']) if data is not None else 0)
+            if _prefer:
+                physical, physical_report = detect_physical_graph(
+                    image, prefer_multiscale=True,
+                    min_rows=len(data['horizontal']) if data is not None else 0)
+            else:
+                physical, physical_report = detect_physical_graph(image)
             if _debug is not None:
                 _debug.add_geometry('physical_grid_graph_v3',(perf_counter()-_physical_t0)*1000,
                                     {'found':physical is not None,'status':physical_report.get('status'),
@@ -249,6 +258,21 @@ def _build_grid_core(image, *, rectify=False, phase=None, pre_detected=None):
     if _debug is not None:
         _debug.add_geometry('recover_left_edges',(perf_counter()-_left_t0)*1000,
                             {'recovered':left_recovered})
+    # GRID_SPEED_COMBINED_V1: repair only a speculative adaptive candidate.
+    _combo_diag=None
+    from ..config import setting as _combo_setting
+    if method=='Physical Grid Graph V3' and _combo_setting('OCR_GRID_COMBO_PREMESH','1')=='1' and _combo_setting('OCR_GRID_ANOMALY_V3','1')=='1':
+        from . import detector_routing_v1 as _combo_route
+        if _combo_route.used() and not unresolved_curves:
+            from .grid_speed_combined_v1 import premesh
+            from .grid_anomaly_v3 import scan_above,recover_graph
+            from .geometry_lab.algorithms import _dest
+            from .geometry_lab.detection import Rule
+            try:
+                data,_combo_diag=premesh(image,data,scan_above,recover_graph,_dest,Rule)
+            except cv2.error:
+                _combo_diag=None
+            _combo_route.record('combo_premesh',accepted=_combo_diag is not None)
     H, W = image.shape[:2]
     vs, hs = data['vertical'], data['horizontal']
     if phase:
@@ -298,14 +322,22 @@ def _build_grid_core(image, *, rectify=False, phase=None, pre_detected=None):
         warnings.append('Карта выпрямления выходит за границы фотографии или содержит складки.')
     overlay = result.image.copy()
     if not rectify:
+        # GRID_OVERLAY_REUSE_V1
+        from ..config import setting as _overlay_setting
+        _reuse = _overlay_setting('OCR_GRID_OVERLAY_REUSE_V1','1') == '1'
+        if _reuse:
+            from .grid_overlay_reuse_v1 import polygon_reader
+            _polygon = polygon_reader(result, intersections, cell_polygon)
+        else:
+            _polygon = lambda row,col: cell_polygon(result,row,col)
         for row in range(len(hs)):
             for col in range(len(vs)-1):
-                poly = cell_polygon(result, max(0,min(row,len(hs)-2)), col)
+                poly = _polygon(max(0,min(row,len(hs)-2)), col)
                 edge = poly[:17] if row < len(hs)-1 else poly[34:51]
                 cv2.polylines(overlay, [np.rint(edge).astype(np.int32)], False, (255,100,0), 2, cv2.LINE_AA)
         for col in range(len(vs)):
             for row in range(len(hs)-1):
-                poly = cell_polygon(result, row, max(0,min(col,len(vs)-2)))
+                poly = _polygon(row, max(0,min(col,len(vs)-2)))
                 edge = poly[17:34] if col == len(vs)-1 else poly[51:68]
                 cv2.polylines(overlay, [np.rint(edge).astype(np.int32)], False, (255,100,0), 2, cv2.LINE_AA)
     else:
@@ -315,7 +347,9 @@ def _build_grid_core(image, *, rectify=False, phase=None, pre_detected=None):
             cv2.line(overlay, (round(result.xs[0]), round(y)), (round(result.xs[-1]), round(y)), (255, 100, 0), 2)
     if _debug is not None:
         _debug.add_geometry('safety_and_overlay',(perf_counter()-_overlay_t0)*1000)
-    return result, overlay, {'method': method, 'autogrid_vertical_count': auto_vertical_count,
+    if _combo_diag is not None and (check.get('status')!='MEASURED' or check.get('folded_fraction',1)>0 or check.get('source_valid_fraction',0)<.995):
+        raise ValueError('combo premesh: unsafe repaired mesh')
+    return result, overlay, {'combo_premesh':_combo_diag,'method': method, 'autogrid_vertical_count': auto_vertical_count,
                              'repaired_extreme_horizontal': repaired_curves,
                              'unresolved_extreme_horizontal': unresolved_curves,
                              'physical_detection_selection': report.get('selection'),
@@ -375,13 +409,17 @@ def build_grid(image, *, rectify=False, phase=None):
     return result, overlay, geometry
 
 @_deep_timed("grid", "App/geometry/service.py:cell_polygon")
-def cell_polygon(result, row, column):
+def cell_polygon(result, row, column, *, nodes=None):
     """Sample the four observed source curves bounding a single grid cell."""
     data=result.info['source_grid']; H,W=result.info['source_shape'][:2]
     left,top=result.info['source_offset']; v0,v1=data['vertical'][column:column+2]
     h0,h1=data['horizontal'][row:row+2]
-    tl=np.array(intersection(v0,h0,(H,W))); tr=np.array(intersection(v1,h0,(H,W)))
-    bl=np.array(intersection(v0,h1,(H,W))); br=np.array(intersection(v1,h1,(H,W)))
+    if nodes is None:
+        tl=np.array(intersection(v0,h0,(H,W))); tr=np.array(intersection(v1,h0,(H,W)))
+        bl=np.array(intersection(v0,h1,(H,W))); br=np.array(intersection(v1,h1,(H,W)))
+    else:
+        tl,tr=nodes[row,column],nodes[row,column+1]
+        bl,br=nodes[row+1,column],nodes[row+1,column+1]
     def horizontal(rule,a,b):
         x=np.linspace(a[0],b[0],17);return np.column_stack((x,rule.eval((x-W/2)/W)))
     def vertical(rule,a,b):

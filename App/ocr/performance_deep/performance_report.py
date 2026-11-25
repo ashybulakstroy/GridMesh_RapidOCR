@@ -87,6 +87,20 @@ def render(report):
                                          stats.get('min_ms'),stats.get('max_ms')))
             chunks.append('<h3>Внутренние вызовы поиска сетки</h3><p>Сумма показывает длительность всех вызовов функции; вложенные вызовы могут пересекаться, поэтому её нельзя прибавлять к времени других этапов. «Не зафиксировано» не означает, что вызовов было ноль.</p>')
             chunks.append(table(['Функция','Вызовы','Сумма, мс','Медиана, мс','P90, мс','Мин., мс','Макс., мс'],selected))
+            details=(v.get('counters') or {}).get('details') or []
+            internal=[d for d in details if d.get('name')=='grid_internal_timing' and isinstance(d.get('breakdown_ms'),dict)]
+            chunks.append('<h3>Где тратится время внутри функций</h3>')
+            if internal:
+                breakdown=defaultdict(list)
+                for detail in internal:
+                    for name,ms in detail['breakdown_ms'].items():
+                        breakdown[(detail.get('function','—'),name)].append(number(ms))
+                chunks.append('<p>Суммы по измеренным вызовам; внутренние таймеры собраны в режиме DEBUG и могут добавлять собственные накладные расходы.</p>')
+                chunks.append(table(['Функция','Внутренний этап','Измерений','Сумма, мс','Медиана, мс'],
+                    [(function,name,len(values),round(sum(values),2),round(statistics.median(values),2))
+                     for (function,name),values in breakdown.items()]))
+            else:
+                chunks.append('<p>Для этого задания внутренняя разбивка не была записана. Повторите обработку в режиме DEBUG после обновления сервера.</p>')
         if g in ('ocr','totals'):
             for c in report['cells']:
                 if (g=='totals') != (c['cell_id'].startswith('receipt_') or c['cell_id']=='printed_vat' or 'footer' in c['cell_id']):continue
@@ -100,15 +114,24 @@ def render(report):
             if key in ('stages','max_stage_ms','wall_ms','detailed'):continue
             chunks.append(f'<details><summary>{esc(key)}</summary><pre>{js(val)}</pre></details>')
         chunks.append('</section>')
+    if report.get('deep_profile'):
+        chunks.append('<p><a href="deep_profile.json">Сырые данные профилирования (JSON)</a></p>')
     chunks.append(f'<section><h2>Конфигурация и ресурсы</h2><pre>{js({k:report[k] for k in ("configuration","cpu","memory","capture_warnings","notes")})}</pre></section></html>')
     return ''.join(chunks)
 
 def generate(job, deep=None, images=None, job_ms=2000, stage_ms=1000, receipt=None):
-    job=Path(job); start=time.perf_counter(); p=read(job/'performance_profile.json',{}); r=receipt if receipt is not None else read(job/'receipt.json',{}); deep=dict(deep or {})
+    job=Path(job); start=time.perf_counter(); p=read(job/'performance_profile.json',{}); r=receipt if receipt is not None else read(job/'receipt.json',{}); has_deep=deep is not None; deep=dict(deep or {})
     if (job/'grid_anomaly.json').exists(): deep.setdefault('grid_anomaly',read(job/'grid_anomaly.json',{}))
     report=build(p,r,deep,job_ms,stage_ms)
     if report is None:return None
     target=job/'problem_performance'; target.mkdir(exist_ok=True)
+    if has_deep:
+        raw={'schema':'performance-deep-capture-v1','job_id':r.get('job_id',job.name),
+             'capture_status':deep.get('capture_status','provided'),**deep}
+        tmp=target/'deep_profile.json.tmp'
+        tmp.write_text(json.dumps(raw,ensure_ascii=False,indent=2),encoding='utf-8')
+        os.replace(tmp,target/'deep_profile.json')
+        report['deep_profile']='deep_profile.json'
     # Historical reports only provide actual attempt images for some cells; never fabricate missing inputs.
     for c in report['cells']:
         for e in c['attempts']:

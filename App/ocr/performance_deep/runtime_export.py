@@ -9,6 +9,7 @@ def export(job_dir, tracker, job_ms=2000, stage_ms=1000):
         r={'job_id':Path(job_dir).name, 'error':read(Path(job_dir)/'error.json',{}).get('error')}
     if not build(p,r,job_ms=job_ms,stage_ms=stage_ms):return None
     c=current();deep=c.export() if c else {'warnings':['Live capture unavailable']}
+    deep['capture_status']='live' if c else 'unavailable'
     report=build(p,r,deep,job_ms,stage_ms);images={}
     import cv2
     for cell in report['cells']:
