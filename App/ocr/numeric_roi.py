@@ -1,8 +1,10 @@
 """Numeric ink ROI and evidence-based exclusion of a price currency glyph."""
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 import cv2
 import numpy as np
 
 
+@_deep_timed("ocr", "App/ocr/numeric_roi.py:split_price_currency")
 def split_price_currency(image, *, clean_rule_fragments=False):
     """Remove only a separated, observed T-shaped currency glyph from OCR input."""
     if image is None or not image.size or min(image.shape[:2]) < 8:
@@ -85,7 +87,8 @@ def split_price_currency(image, *, clean_rule_fragments=False):
                                   'bbox':[int(left),top,int(right),bottom]}
 
 
-def exclude_price_currency(image, roi):
+@_deep_timed("ocr", "App/ocr/numeric_roi.py:exclude_price_currency")
+def exclude_price_currency(image, roi, *, rim_safe=False):
     """V3's spatial split, applied BEFORE recognition, with cell-local bounds.
 
     Decimal punctuation stays in the image. An unconfirmed suffix stays intact;
@@ -96,7 +99,12 @@ def exclude_price_currency(image, roi):
     h,w = image.shape[:2]
     x,y = roi.get('offset', [0,0])
     cropped,currency = split_price_currency(image, clean_rule_fragments=True)
-    info = {**roi, 'ocr_roi_bbox':[x,y,x+w,y+h],
+    # PRICE_CURRENCY_PREOCR_V2: only table callers opt in.
+    reason = 'excluded_existing' if currency is not None else 'not_confirmed'
+    if rim_safe and currency is None:
+        from .price_currency_preocr import fallback_currency
+        cropped,currency,reason = fallback_currency(image,cropped,currency)
+    info = {**roi, 'currency_crop_reason':reason, 'ocr_roi_bbox':[x,y,x+w,y+h],
             'coordinate_space':'gridmesh_cell_pixels',
             'currency_removed_before_ocr':False}
     if currency is None:
@@ -112,6 +120,7 @@ def exclude_price_currency(image, roi):
     return cropped,info
 
 
+@_deep_timed("ocr", "App/ocr/numeric_roi.py:prepare_numeric_input")
 def prepare_numeric_input(image, field):
     """Use the same currency-free image preparation in primary/recovery paths."""
     cropped,roi = crop_numeric_ink(image)
@@ -122,6 +131,7 @@ def prepare_numeric_input(image, field):
     return cropped,roi
 
 
+@_deep_timed("ocr", "App/ocr/numeric_roi.py:_discard_isolated_rim_strokes")
 def _discard_isolated_rim_strokes(ink):
     """Ignore isolated table-edge fragments for locating ink; never alter OCR pixels."""
     h, w = ink.shape
@@ -158,6 +168,7 @@ def _discard_isolated_rim_strokes(ink):
     return cleaned
 
 
+@_deep_timed("ocr", "App/ocr/numeric_roi.py:_compact_number_bounds")
 def _compact_number_bounds(gray):
     """Find an isolated band of glyphs in a tall numeric cell."""
     h, w = gray.shape
@@ -203,6 +214,7 @@ def _compact_number_bounds(gray):
     return max(0, left - pad), max(0, top - pad), min(w, right + pad), min(h, bottom + pad)
 
 
+@_deep_timed("ocr", "App/ocr/numeric_roi.py:crop_numeric_ink")
 def crop_numeric_ink(image):
     if image is None or image.ndim not in (2, 3) or not image.size:
         return image, {'changed': False, 'reason': 'empty'}

@@ -1,4 +1,5 @@
 """Retry suspect numeric cells with an expanded preparation budget."""
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 from decimal import Decimal
 
 from .p1_batch import read_batches
@@ -6,6 +7,7 @@ from .p1_numbers import arithmetic_equal, parse_number
 from .p1_recovery import _recalculate
 
 
+@_deep_timed("totals", "App/ocr/p1_double_retry.py:retry_suspect_cells")
 def retry_suspect_cells(rows, cells, initial_stats, expected_total, vat_rate, *, batch_size=8):
     skipped = {(item['row_id'], item['column_id']) for item in
                initial_stats.get('numeric_roi_skipped_cells', []) +

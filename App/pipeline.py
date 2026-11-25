@@ -189,9 +189,12 @@ def process(data, publish=None, job_id=None, *, rectify=False):
     tracker=RecTracker()
     token=activate(tracker)
     telemetry_token=activate_telemetry(job_id)
+    from .ocr.performance_deep.live_capture import activate as deep_activate, deactivate as deep_deactivate
+    deep_token=deep_activate(setting('LOG_LEVEL','INFO').strip().upper()=='DEBUG')
     try:
         return _process_job(data,publish,job_id,rectify=rectify,rec_tracker=tracker)
     finally:
+        deep_deactivate(deep_token)
         deactivate_telemetry(telemetry_token)
         deactivate(token)
 
@@ -224,12 +227,20 @@ def _process_job(data, publish=None, job_id=None, *, rectify=False, rec_tracker)
         debug_perf=get_debug()
         if debug_perf is not None:
             failure_profile['debug']=debug_perf.finish(rec_tracker.export())
+            failure_profile['debug'].setdefault('configuration', {}).setdefault('log_level', 'DEBUG')
         profile.processing_log.append({'type':'error', 'stage':'Обработка',
                                        'message':f'Обработка завершилась ошибкой: {type(exc).__name__}: {exc}'})
         failure_profile['budget_events'] = [event for event in profile.processing_log if event['type'] == 'budget']
         (job_dir/'performance_profile.json').write_text(json.dumps(failure_profile, ensure_ascii=False, indent=2), encoding='utf-8')
         (job_dir/'processing_log.json').write_text(json.dumps(profile.processing_log, ensure_ascii=False, indent=2), encoding='utf-8')
         (job_dir/'error.json').write_text(json.dumps({'error':str(exc)}, ensure_ascii=False, indent=2), encoding='utf-8')
+        if setting('LOG_LEVEL','INFO').strip().upper()=='DEBUG' and failure_profile['wall_ms']>2000:
+            try:
+                from .ocr.performance_deep.runtime_export import export as export_performance
+                export_performance(job_dir,rec_tracker)
+            except Exception as diagnostic_error:
+                import logging
+                logging.getLogger(__name__).warning('problem_performance export failed: %s', diagnostic_error)
         raise
     result['rec_trace']=rec_tracker.export()
     for item in result.get('processing_log',[]):
@@ -274,6 +285,17 @@ def _process_job(data, publish=None, job_id=None, *, rectify=False, rec_tracker)
         json.dumps(experiment_payload, ensure_ascii=False, indent=2), encoding='utf-8')
     receipt = {key:value for key,value in result.items() if key not in ('original', 'rectified')}
     (job_dir/'receipt.json').write_text(json.dumps(receipt, ensure_ascii=False, indent=2), encoding='utf-8')
+    if setting('LOG_LEVEL','INFO').strip().upper()=='DEBUG' and performance['wall_ms']>2000:
+        try:
+            from .ocr.performance_deep.runtime_export import export as export_performance
+            diagnostic_path=export_performance(job_dir,rec_tracker)
+            if diagnostic_path is not None:
+                result['problem_performance']={'report':diagnostic_path.relative_to(ROOT).as_posix()}
+                receipt['problem_performance']=result['problem_performance']
+                (job_dir/'receipt.json').write_text(json.dumps(receipt, ensure_ascii=False, indent=2), encoding='utf-8')
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning('problem_performance export failed: %s',exc)
     return result
 
 

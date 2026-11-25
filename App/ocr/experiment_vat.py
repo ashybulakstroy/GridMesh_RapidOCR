@@ -6,6 +6,7 @@ can be used as a standalone printed-VAT OCR witness. If neither exists the
 scanner returns 'unavailable' rather than inventing an observed VAT amount.
 """
 from __future__ import annotations
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 
 from decimal import Decimal
 from time import perf_counter
@@ -17,6 +18,7 @@ from .experiment_rec_trace import rec_scope
 from .vat_witness import vat_source, seed_printed_vat, observed_vat_text
 
 
+@_deep_timed("totals", "App/ocr/experiment_vat.py:_prep")
 def _prep(image, mode):
     if mode == 'raw':
         return image
@@ -31,6 +33,7 @@ def _prep(image, mode):
     raise ValueError(mode)
 
 
+@_deep_timed("totals", "App/ocr/experiment_vat.py:scan_printed_vat")
 def scan_printed_vat(rows, cache, book, vat_rate, *, read_line=None,
                      model_pool=None, max_probes=6, always_check=True):
     """Same evidentiary standard as footer: multiple OCR readings, no auto-fix.

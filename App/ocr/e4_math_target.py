@@ -3,14 +3,17 @@
 An inferred number is used only to prioritize a Tesseract read. It is never
 inserted into CandidateBook and cannot be applied without photographed OCR.
 """
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 from decimal import Decimal
 from .p1_numbers import parse_number
 
 
+@_deep_timed("totals", "App/ocr/e4_math_target.py:_digits")
 def _digits(value):
     return ''.join(c for c in str(value) if '0' <= c <= '9')
 
 
+@_deep_timed("totals", "App/ocr/e4_math_target.py:_distance")
 def _distance(a, b):
     """Levenshtein distance for two short numeric strings."""
     if len(a) < len(b):
@@ -25,6 +28,7 @@ def _distance(a, b):
     return previous[-1]
 
 
+@_deep_timed("totals", "App/ocr/e4_math_target.py:select_math_targets")
 def select_math_targets(rows, printed_total, book=None, *, max_cells=2):
     """Select probable OCR failure locations, NOT corrected values.
 

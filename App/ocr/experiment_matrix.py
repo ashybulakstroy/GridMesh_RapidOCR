@@ -6,6 +6,7 @@ No values are synthesised from arithmetic; only actual OCR observations or
 user edits can participate in a candidate assignment.
 """
 from __future__ import annotations
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 
 from decimal import Decimal
 from collections import defaultdict
@@ -16,11 +17,13 @@ NUMERIC_FIELDS = ('quantity', 'price', 'printed_total')
 MODEL = 'PP-OCRv5 Cyrillic Mobile / RapidOCR 3.x'
 
 
+@_deep_timed("totals", "App/ocr/experiment_matrix.py:_decimal_string")
 def _decimal_string(value):
     parsed = parse_number(value)
     return format(parsed.normalize(), 'f') if parsed is not None else None
 
 
+@_deep_timed("totals", "App/ocr/experiment_matrix.py:_confidence")
 def _confidence(value):
     if value is None:
         return None
@@ -30,6 +33,7 @@ def _confidence(value):
         return None
 
 
+@_deep_timed("totals", "App/ocr/experiment_matrix.py:model_identity")
 def model_identity(model):
     aliases={MODEL:'v5_cyrillic_mobile','v5':'v5_cyrillic_mobile',
              'PP-OCRv5 Mobile Cyrillic':'v5_cyrillic_mobile',
@@ -38,6 +42,7 @@ def model_identity(model):
     return aliases.get(model,model)
 
 
+@_deep_timed("totals", "App/ocr/experiment_matrix.py:observation")
 def observation(text, confidence, path, *, model=MODEL, user=False, note=None):
     """An observation has immutable provenance and may be invalid as a number."""
     result = {'text': str(text if text is not None else ''),
@@ -193,6 +198,7 @@ class CandidateBook:
         return {'cells': self.cells, 'footer': self.footer, 'vat': self.vat}
 
 
+@_deep_timed("totals", "App/ocr/experiment_matrix.py:_build_row_options")
 def _build_row_options(row, book, cap):
     rid = row['row_id']
     qs = book.possible_values(rid, 'quantity')
@@ -220,6 +226,7 @@ def _build_row_options(row, book, cap):
     return result[:cap], len(result) > cap
 
 
+@_deep_timed("totals", "App/ocr/experiment_matrix.py:solve_matrix")
 def solve_matrix(rows, book, vat_rate, *, max_nodes=100000, per_row_cap=64):
     """Find real combinations with bounded DFS and Decimal exact arithmetic.
 

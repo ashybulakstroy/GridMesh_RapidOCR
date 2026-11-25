@@ -1,4 +1,5 @@
 """Bounded Tesseract KAZ fallback for unresolved numeric cells."""
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 import os
 from pathlib import Path
 import shutil
@@ -15,6 +16,7 @@ from .p1_numbers import parse_number
 from .p1_recovery import _recalculate
 
 
+@_deep_timed("totals", "App/ocr/e5_tesseract.py:executable")
 def executable():
     choices = [setting('TESSERACT_EXE', ''),
                str(ROOT / 'models/tesseract/tesseract.exe'), shutil.which('tesseract'),
@@ -23,6 +25,7 @@ def executable():
     return next((str(p) for p in choices if p and Path(p).is_file()), None)
 
 
+@_deep_timed("totals", "App/ocr/e5_tesseract.py:read_tesseract")
 def read_tesseract(image, exe, *, row_id, field, variant, whitelist):
     started = perf_counter()
     text, error = '', None
@@ -52,6 +55,7 @@ def read_tesseract(image, exe, *, row_id, field, variant, whitelist):
             'error':error, 'variant':variant, 'wall_ms':elapsed}
 
 
+@_deep_timed("totals", "App/ocr/e5_tesseract.py:recover_with_tesseract")
 def recover_with_tesseract(rows, crops, recovery, *, max_cells=3, book=None,
                            exclude_keys=(), accept_invalid=True, force_keys=()):
     """Try invalid fields and conflicting OCR readings; keep conflicts for review."""

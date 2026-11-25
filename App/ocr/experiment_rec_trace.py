@@ -29,6 +29,10 @@ class RecTracker:
         keys=list(dict.fromkeys(keys or ['unattributed']))
         event={'cells':keys,'stage':str(stage),'model_id':str(model),'mode':str(mode),
                'wall_ms':round(float(ms),3),'success':bool(success)}
+        if self.capture_images:
+            from .performance_deep.live_capture import attempt_reason
+            why=attempt_reason()
+            if why:event['fallback_reason']=why
         if note:event['note']=str(note)
         if result is not None:
             values=getattr(result,'txts',None)

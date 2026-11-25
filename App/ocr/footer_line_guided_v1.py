@@ -4,6 +4,7 @@ No inferred amounts: OCR is performed on an actual source-image strip between
 FOOTER horizontal rules. Unconfirmed geometry leaves the old route untouched.
 """
 from __future__ import annotations
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 
 from time import perf_counter
 import re
@@ -13,6 +14,7 @@ import numpy as np
 _NUMERIC_LINE = re.compile(r"\s*[\d\s.,]+\s*(?:[ТT₸]|тг\.?)?\s*\Z", re.I)
 
 
+@_deep_timed("totals", "App/ocr/footer_line_guided_v1.py:_slanted_footer_bounds")
 def _slanted_footer_bounds(ink, *, x0, yy0, anchor, row_h, relaxed=False):
     """Find two long, actually printed, similarly sloped footer borders."""
     height,width=ink.shape
@@ -55,6 +57,7 @@ def _slanted_footer_bounds(ink, *, x0, yy0, anchor, row_h, relaxed=False):
     return best
 
 
+@_deep_timed("totals", "App/ocr/footer_line_guided_v1.py:guide_from_grid")
 def guide_from_grid(rect, image_shape):
     """Original-photo price column and lowest detected grid line, not a guess.
 
@@ -87,6 +90,7 @@ def guide_from_grid(rect, image_shape):
         return None
 
 
+@_deep_timed("totals", "App/ocr/footer_line_guided_v1.py:isolate_footer")
 def isolate_footer(image, guide):
     """Return (source crop, original-photo bbox, diagnostics), else (None,...).
 
@@ -183,6 +187,7 @@ def isolate_footer(image, guide):
         **({'border_evidence':border_evidence} if border_evidence else {})}
 
 
+@_deep_timed("totals", "App/ocr/footer_line_guided_v1.py:attempt_focused_footer")
 def attempt_focused_footer(image, guide, read_one, parse_number, *, min_confidence=.86):
     """Exactly one recognizer call if observed geometry permits; no arithmetic guess."""
     crop,bbox,diag=isolate_footer(image,guide)

@@ -5,6 +5,7 @@ reveal an ambiguous matrix. Normal E4 continues AFTER the preview is published.
 No external models or dependencies are required.
 """
 from __future__ import annotations
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 
 from copy import deepcopy
 from decimal import Decimal
@@ -16,6 +17,7 @@ from .p1_numbers import parse_number
 NUMERIC_FIELDS = ('quantity', 'price', 'printed_total')
 
 
+@_deep_timed("totals", "App/ocr/e4_adaptive_early.py:_observed_numbers")
 def _observed_numbers(book, key):
     item = book.cells.get(book.key(*key), {})
     values = set()
@@ -25,6 +27,7 @@ def _observed_numbers(book, key):
     return values
 
 
+@_deep_timed("totals", "App/ocr/e4_adaptive_early.py:rank_candidates")
 def rank_candidates(rows, crops):
     """Invalid/missing > row mismatch > low OCR confidence; stable order."""
     index = {int(row['row_id']): row for row in rows}
@@ -47,6 +50,7 @@ def rank_candidates(rows, crops):
     return sorted((key for key in crops if key[1] in NUMERIC_FIELDS and int(key[0]) in index), key=priority)
 
 
+@_deep_timed("totals", "App/ocr/e4_adaptive_early.py:eligible_first_result")
 def eligible_first_result(matrix, rows, book):
     """Only unique, complete, nontruncated arithmetic; VAT must be observed.
 
@@ -79,6 +83,7 @@ def eligible_first_result(matrix, rows, book):
     return True
 
 
+@_deep_timed("totals", "App/ocr/e4_adaptive_early.py:make_early_snapshot")
 def make_early_snapshot(rows, book, matrix, total, vat_rate, elapsed_ms, scans, job_id):
     """Freeze selected observed OCR digits; original rows stay untouched."""
     solution = matrix['solutions'][0]
@@ -117,6 +122,7 @@ def make_early_snapshot(rows, book, matrix, total, vat_rate, elapsed_ms, scans, 
     }
 
 
+@_deep_timed("totals", "App/ocr/e4_adaptive_early.py:adaptive_collect")
 def adaptive_collect(rows, book, crops, vat_rate, collect_one, on_first_ready,
                       *, max_nodes=2500, priority_keys=(), max_probes=None):
     """Try weakest numeric cells first; solve E4 on each NEW numeric candidate.
@@ -197,6 +203,7 @@ def adaptive_collect(rows, book, crops, vat_rate, collect_one, on_first_ready,
     }
 
 
+@_deep_timed("totals", "App/ocr/e4_adaptive_early.py:compare_early_final")
 def compare_early_final(early, final):
     """Separate changed displayed digits from newly found OCR candidates."""
     old_rows = {int(x['row_id']): x for x in early.get('rows', [])}

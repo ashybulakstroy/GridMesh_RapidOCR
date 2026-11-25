@@ -1,4 +1,5 @@
 """Name-only experimental REC routing. No changes to numeric fields."""
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 import re
 from time import perf_counter
 import cv2
@@ -6,6 +7,7 @@ import numpy as np
 from ..config import setting
 
 
+@_deep_timed("ocr", "App/ocr/text_selective.py:ink")
 def ink(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
     _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV+cv2.THRESH_OTSU)
@@ -14,6 +16,7 @@ def ink(image):
     return mask
 
 
+@_deep_timed("ocr", "App/ocr/text_selective.py:segments_v1")
 def segments_v1(image):
     if image is None or not image.size: return [], 'empty'
     h,w=image.shape[:2]
@@ -40,6 +43,7 @@ def segments_v1(image):
     return result, 'observed' if len(result)>1 else 'single'
 
 
+@_deep_timed("ocr", "App/ocr/text_selective.py:segments")
 def segments(image):
     bands,state=segments_v1(image)
     if not bands:return bands,state
@@ -63,6 +67,7 @@ def segments(image):
         bounds=[a]+cuts+[b];out.extend(zip(bounds,bounds[1:]))
     return out,'observed' if len(out)>1 else 'single'
 
+@_deep_timed("ocr", "App/ocr/text_selective.py:trim_short")
 def trim_short(crop):
     mask=ink(crop); h,w=mask.shape
     xs=np.flatnonzero(np.count_nonzero(mask,axis=0)>0)
@@ -73,6 +78,7 @@ def trim_short(crop):
     return np.ascontiguousarray(crop[:,a:b]),a
 
 
+@_deep_timed("ocr", "App/ocr/text_selective.py:gamma")
 def gamma(image):
     g=float(setting('OCR_TEXT_SELECTIVE_GAMMA','1.35'))
     if not .2<=g<=3: raise ValueError('gamma must be .2..3')
@@ -82,10 +88,12 @@ def gamma(image):
     return cv2.cvtColor(out,cv2.COLOR_GRAY2BGR) if image.ndim==3 else out
 
 
+@_deep_timed("ocr", "App/ocr/text_selective.py:suspect")
 def suspect(text,score):
     return not text.strip() or score<float(setting('OCR_TEXT_SELECTIVE_MIN_CONF','0.80')) or not re.search(r'\w|[¼½¾⅛⅜⅝⅞]',text) or bool(re.search(r'[/–-]$',text.strip()))
 
 
+@_deep_timed("ocr", "App/ocr/text_selective.py:join")
 def join(parts):
     out=[]
     for value in parts:
@@ -97,6 +105,7 @@ def join(parts):
     return ' '.join(out)
 
 
+@_deep_timed("ocr", "App/ocr/text_selective.py:read_name_v1")
 def read_name_v1(image,row_id,column_id,offset,*,primary,secondary,last_model,lock,full):
     started=perf_counter(); bands,state=segments_v1(image)
     h,w=image.shape[:2]; ox,oy=offset
@@ -137,6 +146,7 @@ def read_name_v1(image,row_id,column_id,offset,*,primary,secondary,last_model,lo
     return dict(text=join([b['text'] for b in blocks]),confidence=min((b['confidence'] for b in blocks),default=0.),bbox=bbox,cell_id=f'{row_id}-{column_id}',row_id=row_id,column_id=column_id,blocks=blocks,model_id=models[0] if len(models)==1 else 'mixed' if models else None,model_ids=models,strategy='text_selective_'+state,text_selective={'bands':bands,'state':state,'lines':history,'wall_ms':round((perf_counter()-started)*1000,3)})
 
 
+@_deep_timed("ocr", "App/ocr/text_selective.py:read_name")
 def read_name(image,row_id,column_id,offset,*,primary,secondary,last_model,lock,full):
     mode=setting('OCR_TEXT_FAST_MODE','E').upper()
     if mode=='G':return read_name_v1(image,row_id,column_id,offset,primary=primary,secondary=secondary,last_model=last_model,lock=lock,full=full)

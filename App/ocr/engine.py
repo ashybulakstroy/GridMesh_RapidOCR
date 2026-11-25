@@ -1,4 +1,5 @@
 """RapidOCR 3.x adapter. Models are initialized once and shared by all cells."""
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 import threading
 from contextvars import ContextVar
 from contextlib import contextmanager
@@ -39,6 +40,7 @@ def inference_lane(lane):
         _LANE.reset(token)
 
 
+@_deep_timed("ocr", "App/ocr/engine.py:onnx_threads")
 def onnx_threads():
     """Divide the existing table thread budget between simultaneous columns."""
     configured = positive_int('OCR_ONNX_THREADS', 2)
@@ -52,6 +54,7 @@ def onnx_threads():
     return configured
 
 
+@_deep_timed("ocr", "App/ocr/engine.py:engine")
 def engine():
     key = (_LANE.get(), 'primary')
     if key not in _models:
@@ -72,6 +75,7 @@ def engine():
     return _models[key]
 
 
+@_deep_timed("ocr", "App/ocr/engine.py:footer_engine")
 def footer_engine():
     """Detector profile for short, wide receipt footer regions."""
     key = (_LANE.get(), 'detector')
@@ -95,6 +99,7 @@ def footer_engine():
     return _models[key]
 
 
+@_deep_timed("ocr", "App/ocr/engine.py:_run_cyrillic_rec")
 def _run_cyrillic_rec(image):
     start=perf_counter()
     try:
@@ -128,6 +133,7 @@ def _run_cyrillic_rec(image):
             return result
         raise
 
+@_deep_timed("ocr", "App/ocr/engine.py:_run_english_rec")
 def _run_english_rec(image):
     start=perf_counter()
     try:
@@ -140,6 +146,7 @@ def _run_english_rec(image):
         raise
 
 
+@_deep_timed("ocr", "App/ocr/engine.py:read_full")
 def read_full(image, *, footer_mode=False, cell_mode=False):
     if image is None or not image.size or min(image.shape[:2]) < 4: return []
     scale = max(1., 160/min(image.shape[:2])) if cell_mode else 1.
@@ -181,6 +188,7 @@ def read_full(image, *, footer_mode=False, cell_mode=False):
     return lines
 
 
+@_deep_timed("ocr", "App/ocr/engine.py:english_engine")
 def english_engine():
     key = (_LANE.get(), 'english')
     if key not in _models:
@@ -196,6 +204,7 @@ def english_engine():
     return _models[key]
 
 
+@_deep_timed("ocr", "App/ocr/engine.py:read_line")
 def read_line(image):
     """Recognize one observed line without running the text detector."""
     if image is None or not image.size: return None
@@ -205,6 +214,7 @@ def read_line(image):
     return {'text':str(result.txts[0]), 'confidence':float(result.scores[0])}
 
 
+@_deep_timed("ocr", "App/ocr/engine.py:_has_separate_numeric_lines")
 def _has_separate_numeric_lines(image):
     """Use image evidence to decide whether a numeric cell needs detection."""
     if image.shape[0] < 35 or image.shape[1] < 6:
@@ -220,6 +230,7 @@ def _has_separate_numeric_lines(image):
     return any(b[0]-a[1] >= 4 for a,b in zip(bands,bands[1:]))
 
 
+@_deep_timed("ocr", "App/ocr/engine.py:_read_observed_name_lines")
 def _read_observed_name_lines(image, row_id, column_id, offset):
     """Recognize physically separated text bands; fall back when uncertain."""
     if image.shape[0] < 30 or image.shape[1] < 40:
@@ -263,6 +274,7 @@ def _read_observed_name_lines(image, row_id, column_id, offset):
             'strategy':'observed_line_segments', 'blocks':blocks}
 
 
+@_deep_timed("ocr", "App/ocr/engine.py:read_cell")
 def read_cell(image, row_id, column_id, offset, *, force_single=False):
     # Experiment: one Cyrillic model for all three primary table fields.
     # Set OCR_UNIFIED_TINY_ENABLE=0 to compare with the previous primary routing.
@@ -290,6 +302,7 @@ def read_cell(image, row_id, column_id, offset, *, force_single=False):
         _NAME_MODEL.reset(token)
 
 
+@_deep_timed("ocr", "App/ocr/engine.py:_read_cell")
 def _read_cell(image, row_id, column_id, offset, *, force_single=False):
     # Numeric cells and short single-line names benefit from recognition of the
     # whole physical cell: a detector can otherwise miss small digits entirely.
@@ -325,12 +338,30 @@ def _read_cell(image, row_id, column_id, offset, *, force_single=False):
         if direct.txts:
             text, score = str(direct.txts[0]), float(direct.scores[0])
             if column_id in {'quantity', 'price'} and _has_separate_numeric_lines(image):
-                parts = read_full(image)
-                parts.sort(key=lambda item: min(p[1] for p in item['bbox']))
-                if (len(parts) >= 2 and all(re.fullmatch(r'[\d,.\sTТ₸]+', p['text']) for p in parts)
-                        and all(min(p[1] for p in b['bbox']) > min(p[1] for p in a['bbox'])+5 for a,b in zip(parts,parts[1:]))):
-                    text = ''.join(p['text'].strip() for p in parts)
-                    score = min(p['confidence'] for p in parts)
+                # NUMERIC_MULTILINE_SMARTGATE_V1: only veto on positive evidence.
+                from .numeric_smart_gate import may_skip_detector, single_line_evidence
+                _smart_enabled = setting('OCR_NUMERIC_SMART_GATE', '1') == '1'
+                _smart_evidence = single_line_evidence(image) if _smart_enabled else (False, 'disabled')
+                _smart_skip = _smart_enabled and may_skip_detector(image, text, score, evidence=_smart_evidence)
+                if _smart_skip:
+                    # Existing performance report, not a new diagnostic folder.
+                    try:
+                        from .performance_deep.live_capture import count as _smart_count
+                        _smart_count('ocr_numeric_det_skipped', cell_id=f'{row_id}:{column_id}', reason=_smart_evidence[1], confidence=score)
+                    except ImportError:
+                        pass
+                if not _smart_skip:
+                    from .performance_deep.live_capture import reason as deep_reason, count as deep_count
+                    with deep_reason('numeric_separate_lines_after_successful_rec'):
+                        parts = read_full(image)
+                    parts.sort(key=lambda item: min(p[1] for p in item['bbox']))
+                    if (len(parts) >= 2 and all(re.fullmatch(r'[\d,.\sTТ₸]+', p['text']) for p in parts)
+                            and all(min(p[1] for p in b['bbox']) > min(p[1] for p in a['bbox'])+5 for a,b in zip(parts,parts[1:]))):
+                        text = ''.join(p['text'].strip() for p in parts)
+                        score = min(p['confidence'] for p in parts)
+                        deep_count('ocr_numeric_det_decision', cell_id=f'{row_id}:{column_id}', accepted=True, detected_parts=len(parts), reason='valid_separated_numeric_parts')
+                    else:
+                        deep_count('ocr_numeric_det_decision', cell_id=f'{row_id}:{column_id}', accepted=False, detected_parts=len(parts), reason='parts_failed_numeric_or_spacing_rule')
             bbox = [offset[0], offset[1], offset[0]+image.shape[1], offset[1]+image.shape[0]]
             block = dict(text=text, confidence=score, bbox=bbox, cell_id=f'{row_id}-{column_id}', row_id=row_id, column_id=column_id)
             return {**block, 'blocks': [block.copy()]}
@@ -366,6 +397,7 @@ def _read_cell(image, row_id, column_id, offset, *, force_single=False):
 
 _TEXT_LAST_ROW = ContextVar('text_fast_last_row', default=None)
 
+@_deep_timed("ocr", "App/ocr/engine.py:_text_selective_v5")
 def _text_selective_v5(image):
     start=perf_counter()
     try:

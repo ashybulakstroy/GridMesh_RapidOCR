@@ -4,6 +4,7 @@ The receipt has columns such as NDS 16% | 23200 | 1, where 23200 is the
 photographed tax amount, not a percentage-derived calculation.
 """
 from __future__ import annotations
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 
 from decimal import Decimal
 from .p1_numbers import parse_number
@@ -11,6 +12,7 @@ from .p1_numbers import parse_number
 NUMERIC_FIELDS = ('quantity', 'price', 'printed_total')
 
 
+@_deep_timed("totals", "App/ocr/vat_witness.py:_cell_value")
 def _cell_value(cell):
     if not isinstance(cell, dict):
         return None
@@ -20,11 +22,13 @@ def _cell_value(cell):
     return parse_number(cell.get('text'))
 
 
+@_deep_timed("totals", "App/ocr/vat_witness.py:_one_tax_row")
 def _one_tax_row(rows):
     taxes = [row for row in rows if row.get('kind') == 'tax']
     return taxes[0] if len(taxes) == 1 else None
 
 
+@_deep_timed("totals", "App/ocr/vat_witness.py:vat_source")
 def vat_source(rows):
     """Choose a *photographed* cell, not an arithmetic estimate of VAT.
 
@@ -46,6 +50,7 @@ def vat_source(rows):
     return None, 'tax_amount_not_directly_observed'
 
 
+@_deep_timed("totals", "App/ocr/vat_witness.py:_observations")
 def _observations(book, rid, field):
     bucket = book.cells.get(book.key(rid, field)) or {}
     if bucket.get('user_locked'):
@@ -55,6 +60,7 @@ def _observations(book, rid, field):
     return [x for x in bucket.get('observations', []) if x.get('number') is not None]
 
 
+@_deep_timed("totals", "App/ocr/vat_witness.py:_candidate_source")
 def _candidate_source(row, book):
     """Fallback if primary cells are unreadable but real OCR alternatives exist."""
     rid = row['row_id']
@@ -70,6 +76,7 @@ def _candidate_source(row, book):
     return None, 'tax_amount_not_directly_observed'
 
 
+@_deep_timed("totals", "App/ocr/vat_witness.py:seed_printed_vat")
 def seed_printed_vat(rows, book):
     """Add only values actually read in a tax-row cell by OCR or a user.
 
@@ -119,6 +126,7 @@ def seed_printed_vat(rows, book):
             'number': str(observed) if observed is not None else None}
 
 
+@_deep_timed("totals", "App/ocr/vat_witness.py:observed_vat_text")
 def observed_vat_text(book, preferred=None):
     """Select an actual numeric observation; never return an invalid first entry.
 

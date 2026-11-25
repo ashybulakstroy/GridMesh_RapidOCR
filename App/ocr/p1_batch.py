@@ -3,6 +3,7 @@
 Use one existing cyrillic model; numeric/text are separate *logical* queues.
 Model sessions are reused; the footer lane owns separate sessions.
 """
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 from dataclasses import dataclass, replace
 from time import perf_counter
 from time import perf_counter as rec_counter
@@ -25,6 +26,7 @@ class BatchCell:
     source_bbox: list
 
 
+@_deep_timed("ocr", "App/ocr/p1_batch.py:_convert")
 def _convert(cell, text, score):
     bbox = [cell.offset[0], cell.offset[1],
             cell.offset[0] + cell.image.shape[1],
@@ -36,6 +38,7 @@ def _convert(cell, text, score):
     return {**info, 'blocks':[info.copy()]}
 
 
+@_deep_timed("ocr", "App/ocr/p1_batch.py:read_batches")
 def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unlimited_roi=False):
     """Read one-line cells as batches, fallback to legacy for multiline cells.
 
@@ -64,7 +67,7 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
     skipped_cells = []
     roi_enabled = setting('OCR_NUMERIC_ROI', '1') == '1'
     currency_crop_enabled = setting('OCR_PRICE_CURRENCY_CROP', '1') == '1'
-    if roi_enabled:
+    if roi_enabled or currency_crop_enabled:
         # The last row often carries VAT, where a misread unit price
         # multiplies the error by the entire tax amount.
         last_price = next((i for i in range(len(cells)-1, -1, -1)
@@ -77,15 +80,28 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
             cell = cells[i]
             if cell.column_id not in ('quantity','price','printed_total'):
                 continue
-            if not unlimited_roi and roi_seconds >= crop_limit_s:
+            mandatory_price = cell.column_id == 'price' and currency_crop_enabled
+            if not roi_enabled and not mandatory_price:
+                continue
+            if not mandatory_price and not unlimited_roi and roi_seconds >= crop_limit_s:
                 roi_skipped += 1
                 skipped_cells.append({'row_id':cell.row_id, 'column_id':cell.column_id})
             else:
                 started = perf_counter()
-                cropped, info = crop_numeric_ink(cell.image)
-                if cell.column_id == 'price' and currency_crop_enabled:
-                    cropped, info = exclude_price_currency(cropped, info)
-                roi_seconds += perf_counter() - started
+                cropped, info = (crop_numeric_ink(cell.image) if roi_enabled else
+                                 (cell.image, {'changed':False, 'reason':'numeric_roi_disabled'}))
+                if mandatory_price:
+
+                    cropped, info = exclude_price_currency(cropped, info, rim_safe=True)
+                    if not info.get('currency_removed_before_ocr') and info.get('changed'):
+                        # The generic ROI may hide evidence at the edge. Try the original
+                        # cell, but replace only on positive evidence of a currency glyph.
+                        alternative, evidence = exclude_price_currency(cell.image, {'changed':False}, rim_safe=True)
+                        if evidence.get('currency_removed_before_ocr'):
+                            cropped, info = alternative, evidence
+                            info['currency_source'] = 'original_cell_retry'
+                elapsed = perf_counter() - started
+                roi_seconds += elapsed
                 roi_metadata[(cell.row_id,cell.column_id)] = info
                 working[i] = replace(cell, image=cropped)
     crop_seconds = roi_seconds
@@ -257,6 +273,7 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
     return out, stats
 
 
+@_deep_timed("ocr", "App/ocr/p1_batch.py:read_cells")
 def read_cells(cells, *, batch_size=8):
     """Prepare all ROI without a time cap, then recognize individually by column."""
     order = {'name':0, 'quantity':1, 'price':2, 'printed_total':3}

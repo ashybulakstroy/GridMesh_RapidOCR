@@ -1,4 +1,5 @@
 """Independent footer, product-name and numeric OCR workers."""
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from threading import Event
@@ -9,6 +10,7 @@ from .p1_batch import read_batches
 from ..config import setting
 
 
+@_deep_timed("ocr", "App/ocr/cell_mode.py:read_columns")
 def read_columns(cells, cell_reader, *, batch_size=8):
     """Overlap names with numbers without sharing mutable recognizer sessions."""
     names = [cell for cell in cells if cell.column_id == 'name']
@@ -69,6 +71,7 @@ def read_columns(cells, cell_reader, *, batch_size=8):
     return {(c.row_id,c.column_id):combined[(c.row_id,c.column_id)] for c in cells}, stats
 
 
+@_deep_timed("ocr", "App/ocr/cell_mode.py:read_parallel")
 def read_parallel(cells, footer_reader, cell_reader, *, batch_size=8):
     started = Event()
     _debug=get_debug()

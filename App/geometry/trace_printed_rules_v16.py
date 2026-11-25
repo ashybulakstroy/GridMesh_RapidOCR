@@ -5,6 +5,7 @@ permitted only for short local gaps, with independent support on all thirds.
 The printed VAT row is not a prerequisite.
 """
 from __future__ import annotations
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 import numpy as np
 import cv2
 from scipy.ndimage import median_filter
@@ -35,6 +36,7 @@ class MeasuredPolylineRule:
 def _polyline(points, shape):
     return MeasuredPolylineRule(points,shape)
 
+@_deep_timed("grid", "App/geometry/trace_printed_rules_v16.py:trace_printed_horizontals")
 def trace_printed_horizontals(image, graph, *, points_per_row=33,
                               search_px=11, min_coverage=.70,
                               min_third_coverage=.55, max_gap=4):

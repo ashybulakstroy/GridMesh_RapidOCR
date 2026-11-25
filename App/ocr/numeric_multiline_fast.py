@@ -4,6 +4,7 @@ Only OCR-observed digits are joined. A geometrically uncertain cell returns None
 so the application's established OCR fallback remains available.
 """
 from __future__ import annotations
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 import re
 import math
 import cv2
@@ -12,6 +13,7 @@ import numpy as np
 _NUMERIC = re.compile(r"^[0-9][0-9\s.,]*$")
 
 
+@_deep_timed("ocr", "App/ocr/numeric_multiline_fast.py:bands_from_pixels")
 def bands_from_pixels(image):
     if image is None or not image.size or min(image.shape[:2]) < 9:
         return []
@@ -45,6 +47,7 @@ def bands_from_pixels(image):
     return bands
 
 
+@_deep_timed("ocr", "App/ocr/numeric_multiline_fast.py:read_numeric_multiline")
 def read_numeric_multiline(image, read_rec, *, min_score=0.50):
     """Return OCR-observed concatenated digits and individual line evidence.
 

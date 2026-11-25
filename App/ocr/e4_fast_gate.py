@@ -1,9 +1,11 @@
 """Conservative arithmetic gates and targeting for E4; no invented OCR evidence."""
 from __future__ import annotations
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 from decimal import Decimal
 from .p1_numbers import parse_number
 
 
+@_deep_timed("totals", "App/ocr/e4_fast_gate.py:primary_consistency")
 def primary_consistency(rows, printed_total, footer_attempts, *, min_cell_conf=.75,
                         min_footer_conf=.86):
     """True only when existing optical readings and Decimal arithmetic agree.
@@ -51,6 +53,7 @@ def primary_consistency(rows, printed_total, footer_attempts, *, min_cell_conf=.
             'reasons': notes, 'scope': 'primary_ocr_and_arithmetic_not_ground_truth'}
 
 
+@_deep_timed("totals", "App/ocr/e4_fast_gate.py:prioritize_suspects")
 def prioritize_suspects(rows, crops, *, limit=4):
     """Put malformed/low-confidence and suspect VAT fields first.
 

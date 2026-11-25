@@ -1,8 +1,10 @@
 """Conservative extraction of numeric price candidates from isolated currency marks."""
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 import re
 import cv2
 import numpy as np
 
+@_deep_timed("totals", "App/ocr/price_candidate.py:separated_suffix_with_hint")
 def separated_suffix_with_hint(image: np.ndarray, *, has_currency_hint: bool):
     """Only an OCR-confirmed, isolated, T-shaped glyph may be removed.
 
@@ -55,6 +57,7 @@ def separated_suffix_with_hint(image: np.ndarray, *, has_currency_hint: bool):
     return image[:, :left].copy(), 'ocr_hint_and_t_shape'
 
 
+@_deep_timed("totals", "App/ocr/price_candidate.py:prepare_price_candidate")
 def prepare_price_candidate(image, observed_text):
     """Additional image only, preserving the original OCR candidate and decimals."""
     text=str(observed_text or '')

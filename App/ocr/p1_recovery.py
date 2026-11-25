@@ -4,6 +4,7 @@ Never fabricate missing digits from arithmetic. A valid retry can replace an
 invalid reading without a printed row total; other replacements require an
 independently printed row total to support them.
 """
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 from decimal import Decimal
 import cv2
 from .engine import read_cell
@@ -13,6 +14,7 @@ from .numeric_roi import prepare_numeric_input
 from ..config import setting
 
 
+@_deep_timed("totals", "App/ocr/p1_recovery.py:_retry")
 def _retry(cell, image):
     roi = None
     if cell['column_id'] == 'price' and setting('OCR_PRICE_CURRENCY_CROP','1') == '1':
@@ -31,10 +33,12 @@ def _retry(cell, image):
     return candidate
 
 
+@_deep_timed("totals", "App/ocr/p1_recovery.py:_numeric")
 def _numeric(row, field):
     return parse_number(row['cells'][field]['text'])
 
 
+@_deep_timed("totals", "App/ocr/p1_recovery.py:_recalculate")
 def _recalculate(row):
     q, p = _numeric(row, 'quantity'), _numeric(row, 'price')
     printed = _numeric(row, 'printed_total') if 'printed_total' in row['cells'] else None
@@ -44,6 +48,7 @@ def _recalculate(row):
                                   printed is not None and q is not None and p is not None else None)
 
 
+@_deep_timed("totals", "App/ocr/p1_recovery.py:_consider")
 def _consider(row, field, image, reason):
     """Save both readings and accept a valid retry according to available evidence."""
     original = row['cells'][field]
@@ -88,6 +93,7 @@ def _consider(row, field, image, reason):
     return False, tried
 
 
+@_deep_timed("totals", "App/ocr/p1_recovery.py:recover_invalid_and_rows")
 def recover_invalid_and_rows(rows, crop_map, *, max_retries=8):
     """Risk-prioritized retries, capped per receipt, with all alternatives logged."""
     for row in rows:
@@ -128,6 +134,7 @@ def recover_invalid_and_rows(rows, crop_map, *, max_retries=8):
     return {'attempted':attempts, 'changed':changed, 'candidates':candidates, 'details':details}
 
 
+@_deep_timed("totals", "App/ocr/p1_recovery.py:recover_total_mismatch")
 def recover_total_mismatch(rows, crop_map, expected_total, *, max_retries=8):
     """Seek OCR alternatives on footer mismatch; never use footer alone to replace."""
     if expected_total is None:

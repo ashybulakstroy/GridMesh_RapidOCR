@@ -3,6 +3,7 @@
 Image-only experimental detector. Frozen V2 remains a conservative fallback.
 No OCR, reference coordinates, receipt ID, or expected row count is accepted.
 """
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 import cv2,numpy as np
 from itertools import combinations
 from time import perf_counter
@@ -15,6 +16,7 @@ from .structure_diagnostics import PolylineRule
 from .algorithms import intersection
 
 
+@_deep_timed("grid", "App/geometry/geometry_lab/physical_grid_graph_v3.py:multiscale_segments")
 def multiscale_segments(gray):
     H,W=gray.shape;parts={'h':[],'v':[]}; debug=get_debug()
     for scale in [1.,1.5]:
@@ -55,6 +57,7 @@ def multiscale_segments(gray):
     return parts
 
 
+@_deep_timed("grid", "App/geometry/geometry_lab/physical_grid_graph_v3.py:fit_segments")
 def fit_segments(parts,axis,shape):
     H,W=shape;extent=W if axis=='h' else H
     rules=[]
@@ -102,6 +105,7 @@ def evidence(rule,vv,shape,response,dark):
         reason='physical_source_arms_and_four_columns' if accepted else 'insufficient_source_arms_or_column_ink')
 
 
+@_deep_timed("grid", "App/geometry/geometry_lab/physical_grid_graph_v3.py:refine_nearby_ridge")
 def refine_nearby_ridge(rule, vv, shape, response, dark, observed):
     """Refit a near-complete observed rule within 3 px; retain evidence thresholds."""
     if (observed['ink_coverage'] < .80 or min(observed['column_coverage']) < .35
@@ -135,17 +139,24 @@ def refine_nearby_ridge(rule, vv, shape, response, dark, observed):
     return rule, observed
 
 
+@_deep_timed("grid", "App/geometry/geometry_lab/physical_grid_graph_v3.py:_complete_short_grid")
 def _complete_short_grid(data, report):
     """Accept an independently observed short grid only with strong ink evidence."""
     if data is None or report.get('vertical_fallback') or not report.get('vertical_table_local_refit'):
+        from App.ocr.performance_deep.live_capture import count as _count_deep
+        _count_deep('early_exit_rejected', reason='baseline_missing_or_vertical_fallback_or_no_local_refit', baseline_missing=data is None, vertical_fallback=bool(report.get('vertical_fallback')), local_refit=bool(report.get('vertical_table_local_refit')))
         return False
     horizontal = data['horizontal']
     edges = report.get('edges', [])
     if len(data['vertical']) != 5 or len(horizontal) != 4 or len(edges) != 4:
+        from App.ocr.performance_deep.live_capture import count as _count_deep
+        _count_deep('early_exit_rejected', reason='unexpected_grid_dimensions', verticals=len(data['vertical']), horizontals=len(horizontal), edges=len(edges))
         return False
     for edge in edges:
         if (edge['ink_coverage'] < .90 or min(edge['column_coverage']) < .85 or
                 sum(edge['intersection_evidence']) < 4 or edge['longest_unsupported_fraction'] > .06):
+            from App.ocr.performance_deep.live_capture import count as _count_deep
+            _count_deep('early_exit_rejected', reason='insufficient_edge_evidence', edge=edge)
             return False
     first, last = horizontal[0].position, horizontal[-1].position
     for rejected in report.get('rejected', []):
@@ -153,10 +164,13 @@ def _complete_short_grid(data, report):
         if (first + 8 < position < last - 8 and
                 all(abs(position - rule.position) > 7 for rule in horizontal) and
                 rejected['ink_coverage'] >= .55 and sum(rejected['intersection_evidence']) >= 3):
+            from App.ocr.performance_deep.live_capture import count as _count_deep
+            _count_deep('early_exit_rejected', reason='additional_supported_rejected_horizontal', position=float(position))
             return False
     return True
 
 
+@_deep_timed("grid", "App/geometry/geometry_lab/physical_grid_graph_v3.py:detect_physical_graph")
 def detect_physical_graph(image):
     debug=get_debug(); started=perf_counter() if debug else None
     gray=cv2.cvtColor(image,cv2.COLOR_BGR2GRAY);H,W=gray.shape

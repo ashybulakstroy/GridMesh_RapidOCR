@@ -4,6 +4,7 @@ This is an exploratory detector, intended as a lab plugin, never as a silent
 replacement for production OCR. All coordinates are in original image pixels.
 """
 from __future__ import annotations
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 
 from dataclasses import dataclass
 from time import perf_counter
@@ -23,6 +24,7 @@ class Candidate:
     diagnostics: dict | None = None
 
 
+@_deep_timed("grid", "App/geometry/autogrid_gridrefine_v3/detector.py:_h_v_segments")
 def _h_v_segments(image):
     gray=cv2.cvtColor(image,cv2.COLOR_BGR2GRAY)
     h,w=gray.shape
@@ -43,6 +45,7 @@ def _h_v_segments(image):
     return gray,segments,masks
 
 
+@_deep_timed("grid", "App/geometry/autogrid_gridrefine_v3/detector.py:_morph_masks")
 def _morph_masks(gray):
     bw=cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,cv2.THRESH_BINARY_INV,31,9)
     hmask=cv2.morphologyEx(bw,cv2.MORPH_OPEN,np.ones((1,38),np.uint8))
@@ -93,6 +96,7 @@ def _box_peaks(box,masks):
     return hp,vp,float((H>0).mean()),float((V>0).mean())
 
 
+@_deep_timed("grid", "App/geometry/autogrid_gridrefine_v3/detector.py:_rank_candidates")
 def _rank_candidates(gray,masks,more):
     h,w=gray.shape
     proposals=_components(masks,'lsd_connected',h,w)+_components(more,'morph_connected',h,w)
@@ -197,6 +201,7 @@ def _strong_vertical_pair_proposals(image, segments, limit=10):
     return candidates
 
 
+@_deep_timed("grid", "App/geometry/autogrid_gridrefine_v3/detector.py:_recover_by_observed_vertical_rails")
 def _recover_by_observed_vertical_rails(image, segments):
     """Try small ranked candidate set; accept only independently detected grid."""
     from .fitter import fit_grid

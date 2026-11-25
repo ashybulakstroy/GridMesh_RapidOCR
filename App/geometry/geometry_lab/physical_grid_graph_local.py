@@ -3,6 +3,7 @@
 No GT, OCR, target row count or receipt identifiers enter this module. Existing
 warpers and V1 are retained verbatim for the diagnostic comparison.
 """
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 import cv2
 import numpy as np
 from scipy.signal import find_peaks
@@ -56,6 +57,7 @@ def table_local_verticals(gray,initial, *, segments=None):
     return rules
 
 
+@_deep_timed("grid", "App/geometry/geometry_lab/physical_grid_graph_local.py:junction_outer_boundaries")
 def junction_outer_boundaries(vv,candidates,horizontals,response):
     """Resolve paper-vs-table ambiguity by repeated observed T junctions."""
     H,W=response.shape
@@ -91,6 +93,7 @@ def junction_outer_boundaries(vv,candidates,horizontals,response):
     return result
 
 
+@_deep_timed("grid", "App/geometry/geometry_lab/physical_grid_graph_local.py:trace_seed")
 def trace_seed(response,seed,xs,dark=None):
     """Track local evidence within a bounded band around an observed seed.
 
@@ -151,6 +154,7 @@ def trace_seed(response,seed,xs,dark=None):
     return ys,vals
 
 
+@_deep_timed("grid", "App/geometry/geometry_lab/physical_grid_graph_local.py:detect_physical_graph")
 def detect_physical_graph(image, *, ridge=None):
     H,W=image.shape[:2];gray=cv2.cvtColor(image,cv2.COLOR_BGR2GRAY)
     response,dark=ridge if ridge is not None else ridge_response(gray)

@@ -4,6 +4,7 @@ Uses the RapidOCR engines already available in this project. Additional
 preprocessing variants are NOT independent neural networks.
 """
 from __future__ import annotations
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 import re
 from decimal import Decimal
 from time import perf_counter
@@ -14,6 +15,7 @@ from .experiment_rec_trace import rec_scope
 _PATTERN = re.compile(r'^[\d\s.,]+\s*(?:[ТT₸]|тг\.?)?\s*$',re.I)
 
 
+@_deep_timed("totals", "App/ocr/experiment_footer.py:_check_text")
 def _check_text(text):
     if text is None:
         return None
@@ -24,6 +26,7 @@ def _check_text(text):
     return str(num) if num is not None and num>0 else None
 
 
+@_deep_timed("totals", "App/ocr/experiment_footer.py:scan_footer")
 def scan_footer(image, y_bottom, current_total, current_sum, *, read_line=None,
                 read_full=None, always_check=True, max_probes=6, model_pool=None):
     """At least one original-pixel cross-check; deeper only on uncertainty.

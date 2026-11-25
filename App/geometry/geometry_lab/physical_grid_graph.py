@@ -5,6 +5,7 @@ Horizontal fragments are connected by local geometric agreement, never by page
 height or desired row count. Unsupported gaps remain explicitly inferred.
 """
 from __future__ import annotations
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 import cv2
 import numpy as np
 from .detection import (_candidate_lines, _fit_group, _group_and_fit,
@@ -12,6 +13,7 @@ from .detection import (_candidate_lines, _fit_group, _group_and_fit,
 from .algorithms import intersection
 
 
+@_deep_timed("grid", "App/geometry/geometry_lab/physical_grid_graph.py:graph_verticals")
 def graph_verticals(rules,horizontals,width,height):
     """Score five-column hypotheses by shared bounded horizontal edges.
 
@@ -48,6 +50,7 @@ def graph_verticals(rules,horizontals,width,height):
     return best[1]
 
 
+@_deep_timed("grid", "App/geometry/geometry_lab/physical_grid_graph.py:connected_fragments")
 def connected_fragments(parts, width, tolerance=3.0):
     """Join collinear fragments only where they overlap or have a short gap.
 
@@ -95,6 +98,7 @@ def connected_fragments(parts, width, tolerance=3.0):
     return groups
 
 
+@_deep_timed("grid", "App/geometry/geometry_lab/physical_grid_graph.py:detect_physical_graph")
 def detect_physical_graph(image):
     H,W=image.shape[:2];gray=cv2.cvtColor(image,cv2.COLOR_BGR2GRAY)
     groups=connected_fragments(_candidate_lines(gray,'h'),W)

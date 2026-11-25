@@ -1,4 +1,5 @@
 """Automatic observed-grid geometry, with explicit safety warnings."""
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 import cv2
 import numpy as np
 from time import perf_counter
@@ -373,6 +374,7 @@ def build_grid(image, *, rectify=False, phase=None):
     geometry['local_grid_roi'] = stats
     return result, overlay, geometry
 
+@_deep_timed("grid", "App/geometry/service.py:cell_polygon")
 def cell_polygon(result, row, column):
     """Sample the four observed source curves bounding a single grid cell."""
     data=result.info['source_grid']; H,W=result.info['source_shape'][:2]

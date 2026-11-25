@@ -1,4 +1,5 @@
 """Auto-grid fitting. Reimplements V2 local curve fitting; no ROI or GT file imports."""
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 import cv2,numpy as np
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import find_peaks
@@ -50,6 +51,7 @@ def _curve(axis,target,obs,ref,tol=10):
     return coef
 
 
+@_deep_timed("grid", "App/geometry/autogrid/fitter.py:fit_grid")
 def fit_grid(image,roi,relaxed_horizontal_support=False,anchor_right=False):
     height,width=image.shape[:2]
     x0,y0,x1,y1=[int(z) for z in roi]

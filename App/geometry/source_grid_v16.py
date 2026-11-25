@@ -5,6 +5,7 @@ failed header semantics. It never relies on VAT or a receipt-specific offset.
 Failure is explicit: no artificial lines or assumed equal-width columns.
 """
 from __future__ import annotations
+from App.ocr.performance_deep.live_capture import timed as _deep_timed
 import cv2
 import numpy as np
 from collections import defaultdict
@@ -13,6 +14,7 @@ from time import perf_counter
 SELECTED='source_verified_five_rail_v16'
 
 
+@_deep_timed("grid", "App/geometry/source_grid_v16.py:_line_segments")
 def _line_segments(image):
     gray=cv2.cvtColor(image,cv2.COLOR_BGR2GRAY) if image.ndim==3 else image
     raw=cv2.createLineSegmentDetector(cv2.LSD_REFINE_STD).detect(gray)[0]
@@ -187,6 +189,7 @@ def _fit_horizontal(lines,level,rail_x,W):
     return np.array([slope*W,float(offset+slope*W/2)])
 
 
+@_deep_timed("grid", "App/geometry/source_grid_v16.py:detect_source_grid")
 def detect_source_grid(image, *, rule_factory=None):
     """Return (graph, diagnostic); graph None means never accept uncertain crop."""
     began=perf_counter()
@@ -247,6 +250,7 @@ def detect_source_grid(image, *, rule_factory=None):
 
 
 
+@_deep_timed("grid", "App/geometry/source_grid_v16.py:anchor_all_right_corners")
 def anchor_all_right_corners(image,graph,*,rule_factory=None,max_correction=15.0):
     """Anchor EVERY right-side horizontal to an independently observed ink stroke.
 
@@ -333,6 +337,7 @@ def _nodes_from_graph(graph, shape):
     return np.asarray(rows,float)
 
 
+@_deep_timed("grid", "App/geometry/source_grid_v16.py:validate_source_grid")
 def validate_source_grid(image, graph, diagnostic):
     """Full source row census + independent per-curve LSD verification.
 

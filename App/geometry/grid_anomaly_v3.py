@@ -134,11 +134,30 @@ def scan_above(image, map_x, map_y, xs, ys, *, detailed=False):
         anchor={'status':'unconfirmed','candidate_top_y':depth,
                 'candidate_first_product_y':depth+band,'rail_start_y':rail_starts}
         tol=max(12.,.45*pitch)
-        if len(edges)>=2 and len(rails)>=2:
-            top=float(edges[0]['y']); nxt=float(edges[1]['y'])
+        # V4: use the edge nearest the shared rail starts, not the first
+        # horizontal response above the table (e.g. seller text underline).
+        aligned_edges=[]
+        if len(rails)>=3:
+            for edge in edges:
+                y=float(edge['y'])
+                count=sum(abs(start-y)<=tol for start in rail_starts)
+                if count>=3:
+                    error=float(np.median([abs(start-y) for start in rail_starts]))
+                    aligned_edges.append((count,-error,edge['coverage'],y))
+        # Preserve the previous multi-edge recovery on weak two-rail photos;
+        # a SINGLE new upper edge requires the stricter three-rail proof.
+        if not aligned_edges and len(edges)>=2 and len(rails)>=2:
+            top=float(edges[0]['y'])
             aligned=sum(abs(y-top)<=tol for y in rail_starts)
-            if aligned>=2 and .35*pitch <= nxt-top <= 3*pitch:
-                inv=np.linalg.inv(matrix)
+            if aligned>=2:
+                aligned_edges.append((aligned,0.,edges[0]['coverage'],top))
+        if aligned_edges:
+            aligned,_,_,top=max(aligned_edges)
+            kept=[e for e in edges if e['y']>=top-2]
+            # Existing top is a valid header-bottom hypothesis when only
+            # one physical boundary above it remains.
+            nxt=float(kept[1]['y']) if len(kept)>=2 else float(depth)
+            if .35*pitch<=nxt-top<=3*pitch:
                 coords=np.float32([[[w/2,top],[w/2,nxt],[w/2,depth+band]]])
                 source=cv2.perspectiveTransform(coords,inv)[0]
                 anchor.update(status='candidate',rail_start_matches=aligned,
@@ -147,6 +166,24 @@ def scan_above(image, map_x, map_y, xs, ys, *, detailed=False):
                               header_top_source_xy=source[0].round(1).tolist(),
                               first_product_top_source_xy=source[1].round(1).tolist(),
                               current_first_product_top_source_xy=source[2].round(1).tolist())
+                info['discarded_above_anchor']=[e for e in edges if e['y']<top-2]
+                edges=kept
+        # V4: inspect a wide first existing band only on the repair route.
+        # An extra separator must be optically present across all columns,
+        # including both outer rails. Never insert by predicted pitch alone.
+        internal=[]
+        if anchor['status']=='candidate' and band>=1.5*pitch:
+            lo=depth+max(10,round(.30*pitch)); hi=depth+band-max(10,round(.30*pitch))
+            wide=cv2.dilate(ridge,np.ones((7,1),np.uint8))>3
+            peaks=[]
+            for y in range(lo,hi):
+                if cov[y]<.88 or cov[y]<max(cov[max(0,y-4):y+5]):continue
+                evidence=[float(wide[y,int(a):int(b)+1].mean()) for a,b in zip(xs[:-1]-x0,xs[1:]-x0)]
+                if min(evidence)<.75:continue
+                if not peaks or y-peaks[-1][0]>max(8,.22*pitch):peaks.append((y,evidence))
+                elif cov[y]>cov[peaks[-1][0]]:peaks[-1]=(y,evidence)
+            internal=[{'y':int(y),'coverage':round(float(cov[y]),3),'method':'internal_distributed_ridge','column_coverage':c} for y,c in peaks]
+        info['internal_edges']=internal
         if anchor['status']=='unconfirmed':
             radius=max(3,round(.12*pitch))
             top_support=float(max(cov[max(0,depth-radius):depth+radius+1],default=0))
@@ -233,17 +270,20 @@ def recover_graph(image, data, scan, *, rule_factory):
     if scan.get('status')!='suspect' or scan.get('anchor',{}).get('status')!='candidate':
         raise ValueError('no_confirmed_top_anchor')
     edges=scan['edges']; anchor=scan['anchor']; depth=scan['depth']; w=scan['width']; pitch=scan['pitch']
-    if len(edges)<2 or anchor.get('rail_start_matches',0)<2:
+    if not edges or anchor.get('rail_start_matches',0)<(3 if len(edges)==1 else 2):
         raise ValueError('insufficient_anchor_evidence')
     top=anchor['header_top_patch_y']
     edges=[e for e in edges if top-2<=e['y']<depth-max(5,.15*pitch)]
-    if len(edges)<2:raise ValueError('insufficient_observed_boundaries')
+    if not edges:raise ValueError('insufficient_observed_boundaries')
+    upper_edges=list(edges)
+    internal_edges=list(scan.get('internal_edges',[]))
+    edges=upper_edges+internal_edges
     M=np.asarray(scan['source_to_patch'],float); inv=np.linalg.inv(M)
     H,W=image.shape[:2]
     # Recovery path only: recompute source evidence in candidate coordinates.
     pad=max(8,round(.04*w))
     shifted=np.array([[1,0,pad],[0,1,0],[0,0,1]],float)@M
-    patch=cv2.warpPerspective(image,shifted,(w+1+2*pad,int(depth+2*pitch)),borderValue=(255,255,255))
+    patch=cv2.warpPerspective(image,shifted,(w+1+2*pad,int(max(depth+2*pitch,max([e['y'] for e in edges])+pitch))),borderValue=(255,255,255))
     gray=cv2.cvtColor(patch,cv2.COLOR_BGR2GRAY) if patch.ndim==3 else patch
     hb=cv2.morphologyEx(gray,cv2.MORPH_BLACKHAT,np.ones((9,1),np.uint8))
     hr=cv2.morphologyEx(hb,cv2.MORPH_OPEN,np.ones((1,max(15,round(.05*w))),np.uint8))[:,pad:pad+w+1]
@@ -290,7 +330,7 @@ def recover_graph(image, data, scan, *, rule_factory):
         if np.max(np.abs(np.polyval(coef,xx[keep])-yy[keep]))>8:raise ValueError('unstable_new_rule')
         new.append(rule_factory('h',coef,float(np.polyval(coef,0)),float(edge['coverage']),(float(q[:,0].min()),float(q[:,0].max()))))
         fit_details.append({'patch_y':y,'samples':int(keep.sum()),'source_position':float(np.polyval(coef,0))})
-    hs=new+old
+    hs=sorted(new+old,key=lambda rule:rule.position)
     # Check all source nodes, including left/right edges where extrapolation
     # is most dangerous; require monotonic vertical and horizontal order.
     from itertools import product
@@ -303,7 +343,7 @@ def recover_graph(image, data, scan, *, rule_factory):
         raise ValueError('recovered_grid_crosses_or_overlaps')
     if np.any(nodes[:,:,0]<0) or np.any(nodes[:,:,0]>=W) or np.any(nodes[:,:,1]<0) or np.any(nodes[:,:,1]>=H):
         raise ValueError('recovered_grid_outside_photo')
-    return {**data,'horizontal':hs,'vertical':vertical}, {'added_rows':len(new),'preserved_horizontal':len(old),'rail_support':rail_support,'fits':fit_details,'nodes':nodes.tolist()}
+    return {**data,'horizontal':hs,'vertical':vertical}, {'added_rows':len(new),'added_top':len(upper_edges),'added_internal':len(internal_edges),'preserved_horizontal':len(old),'rail_support':rail_support,'fits':fit_details,'nodes':nodes.tolist()}
 
 
 def build_direct(image, rect, geometry, scan, *, rectify=False):
