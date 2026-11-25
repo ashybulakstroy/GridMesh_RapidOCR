@@ -842,7 +842,9 @@ def _process_route_body(data, profile, job_dir, rectify):
     log_retry_details(processing_log, footer_recovery, 'Дополнительная проверка итога')
     profile.phase('E5: проверка проблемных цифр Tesseract')
     try:
-        e5_result = recover_with_tesseract(rows, crop_map, geometry['ocr_recovery'])
+        # E5_TESSERACT_SEQUENTIAL_V1: independently observed total, not computed total.
+        e5_result = recover_with_tesseract(rows, crop_map, geometry['ocr_recovery'],
+            printed_total=total, footer_attempts=footer_attempts, vat_rate=vat_rate)
     except Exception as exc:
         e5_result = {'status':'error', 'details':[], 'candidates':[],
                      'error':f'{type(exc).__name__}: {exc}'}
@@ -1018,6 +1020,8 @@ def _process_route_body(data, profile, job_dir, rectify):
                 fast_targets = select_math_targets(
                     rows, total, book,
                     max_cells=positive_int('OCR_E4_FAST_MATH_E5_MAX_CELLS',2))
+                _e5_already_seen = {(d['row_id'], d['column_id']) for d in e5_result['details']}
+                fast_targets = [x for x in fast_targets if (x['row_id'], x['field']) not in _e5_already_seen]
                 if fast_targets:
                     profile.phase('E4 FAST: адресная проверка Tesseract KAZ')
                     _fast_e5_started = time.perf_counter()

@@ -8,6 +8,7 @@
 #receipt-timer{font-size:1.5em;font-weight:700;white-space:nowrap;flex:0 0 auto;font-variant-numeric:tabular-nums}@media(max-width:600px){#receipt-timer{font-size:18px}}
 
 #profile-rows .timing-slow td:first-child{background:#fff1a8;color:#735600}
+#profile-rows .timing-very-slow td{background:#fff1a8;color:#735600}
 #receipt-editor{border:1px solid #d2dceb;border-radius:8px;padding:12px;margin-bottom:16px}
 #receipt-editor>summary{color:#165ab6}
 #receipt-editor[open]>summary{margin-bottom:12px}

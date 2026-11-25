@@ -36,6 +36,15 @@ class TesseractFallbackTest(unittest.TestCase):
         self.assertEqual(item['line_total'], '1550')
         self.assertTrue(result['details'][0]['accepted'])
 
+    def test_math_confirmed_first_read_skips_second_presentation(self):
+        item = row()
+        item['kind'] = 'product'
+        result = self.run_recovery(item, ['1550'], printed_total='1550',
+                                   footer_attempts=[{'total':'1550', 'confidence':.95}])
+        self.assertEqual(item['cells']['price']['text'], '1550')
+        self.assertEqual(len(result['details'][0]['attempts']), 1)
+        self.assertEqual(result['details'][0]['confirmation'], 'single_observation_and_receipt_math')
+
     def test_disagreeing_readings_are_not_accepted(self):
         item = row()
         result = self.run_recovery(item, ['1550', '15507'])
