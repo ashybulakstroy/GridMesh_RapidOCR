@@ -1,0 +1,47 @@
+{
+  "schema": "paper_first_fullgrid_v12",
+  "files": {
+    "App/geometry/service.py": {
+      "existed": true,
+      "backup": "App__geometry__service.py.bak",
+      "old_sha": "b0cf30763951305dfa0fb33c330fd71b042ddc78a0a831335426c3db38d13c37",
+      "new_sha": "1ac5884bf067566fbab819dd8617e42ce3d84e68ecb874af6dcfa0deef670904"
+    },
+    "App/pipeline.py": {
+      "existed": true,
+      "backup": "App__pipeline.py.bak",
+      "old_sha": "274751579900f82d35574452e8ce0837908b1c2cf5a9278c447869002ddc748b",
+      "new_sha": "9fe7e4c3d2a26b283d0de6e597eee3d392c35804d4f91401a0f3525c99e4f22b"
+    },
+    "App/geometry/paper_first_grid_v12.py": {
+      "existed": false,
+      "backup": "App__geometry__paper_first_grid_v12.py.bak",
+      "old_sha": null,
+      "new_sha": "cfc390258f88597583cd21c3c522b3b6f92d7ff6ee1292d1beabfbcf654a8e6e"
+    },
+    "App/geometry/vertical_rail_recovery_v12.py": {
+      "existed": false,
+      "backup": "App__geometry__vertical_rail_recovery_v12.py.bak",
+      "old_sha": null,
+      "new_sha": "69c25484850bb3ecd8209c3aa1271db04d81b7a1295fa7e3b313156edb5d19c8"
+    },
+    "App/geometry/grid_edge_validator_v12.py": {
+      "existed": false,
+      "backup": "App__geometry__grid_edge_validator_v12.py.bak",
+      "old_sha": null,
+      "new_sha": "f78be9fa0290e1939044914d6c7d3159fa1ca41b3816c5127b8f0d2eabee5d78"
+    },
+    "App/geometry/header_edge_recovery_v12.py": {
+      "existed": false,
+      "backup": "App__geometry__header_edge_recovery_v12.py.bak",
+      "old_sha": null,
+      "new_sha": "9e691c9056813a05bad9fdaf27aacc8ac3dfd4f7c597661fde2e8e6af4ee0dd5"
+    },
+    "App/geometry/product_right_corners_v12.py": {
+      "existed": false,
+      "backup": "App__geometry__product_right_corners_v12.py.bak",
+      "old_sha": null,
+      "new_sha": "ec6110a05eea0d4df4487f4ab8798f3349cba19211b20875fef996629c3c6626"
+    }
+  }
+}

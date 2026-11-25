@@ -153,7 +153,7 @@ def _build_grid_core(image, *, rectify=False, phase=None, pre_detected=None):
     _grid_t0=perf_counter() if _debug is not None else None
     if pre_detected is not None:
         data, report = pre_detected
-        is_local_autogrid = (report or {}).get('selection') == 'local_roi_autogrid_paperguard_v4'
+        is_local_autogrid = (report or {}).get('selection') in ('local_roi_autogrid_paperguard_v4', 'local_table_roi_autogrid_paperguard_v5', 'local_table_roi_autogrid_paperguard_v6', 'paper_first_autogrid_v12', 'source_verified_five_rail_v16')
         automatic_data = data if is_local_autogrid else None
         recovered_horizontal = 0
         method = 'AutoGrid GridRefine V3' if is_local_autogrid else 'Physical Grid Graph V3'
@@ -405,3 +405,71 @@ def cell_crop(result, row, column):
     corners=[(x0,y0),(x1-1,y0),(x1-1,y1-1),(x0,y1-1)]
     source=[[round(float(result.map_x[y,x]),2),round(float(result.map_y[y,x]),2)] for x,y in corners]
     return result.image[y0:y1,x0:x1],(x0,y0),source
+
+
+# PAPER_FIRST_FULLGRID_V16: fallback V12 geometry plus independent V16 source rails.
+# Normal, successful V4 receipts do not pay for an extra local search.
+def build_grid_paper_rescue(image, *, rectify=False, phase=None, header_validator=None):
+    from ..config import setting
+    if setting('OCR_PAPER_RESCUE_V12', '1') != '1':
+        return None
+    from .paper_first_grid_v12 import try_paper_grid, json_native
+    for retry in (False, True):
+        try:
+            graph, report, stats = try_paper_grid(image, retry=retry)
+            if graph is None:
+                continue
+            result, overlay, geometry = _build_grid_core(
+                image, rectify=rectify, phase=phase, pre_detected=(graph,report))
+            safe = geometry.get('safety') or {}
+            if (safe.get('status') != 'MEASURED' or
+                    safe.get('folded_fraction', 1) > 0 or
+                    safe.get('source_valid_fraction', 0) < .995 or
+                    geometry.get('unresolved_extreme_horizontal', 0) > 0):
+                continue
+            if header_validator is not None and not header_validator(result):
+                # A complete grid whose first physical band is a product,
+                # not a header, remains INVALID. Try the alternative ROI.
+                continue
+            geometry['method'] = 'PaperFirst V12 · source-verified local AutoGrid'
+            geometry['paper_first_v12'] = json_native(stats)
+            return result,overlay,geometry
+        except Exception as exc:
+            # An optional rescue can never break the existing geometry route.
+            pass  # Rescue failed: let the original error stand
+    return None
+
+
+# PAPER_FIRST_FULLGRID_V16: independent physical-ink recovery. This route
+# runs only when the usual first table band is implausible or a header fails.
+def build_grid_source_rescue(image, *, rectify=False, phase=None, header_validator=None):
+    from ..config import setting
+    if setting('OCR_SOURCE_GRID_V16','1') != '1':
+        return None
+    try:
+        from .source_grid_v16 import detect_source_grid, validate_source_grid
+        from .paper_first_grid_v12 import json_native
+        graph,diagnostic=detect_source_grid(image)
+        if graph is None:
+            return None
+        accepted,audit=validate_source_grid(image,graph,diagnostic)
+        if not accepted:
+            return None
+        report={'status':'OBSERVED_NOT_GT','selection':'source_verified_five_rail_v16',
+                'version':'source_grid_v16','ink_validation':audit}
+        result,overlay,geometry=_build_grid_core(
+            image,rectify=rectify,phase=phase,pre_detected=(graph,report))
+        safe=geometry.get('safety') or {}
+        if (safe.get('status')!='MEASURED' or
+                safe.get('folded_fraction',1)>0 or
+                safe.get('source_valid_fraction',0)<.995 or
+                geometry.get('unresolved_extreme_horizontal',0)>0):
+            return None
+        if header_validator is not None and not header_validator(result):
+            return None
+        geometry['method']='SourceGrid V16 · independently confirmed source rails'
+        geometry['source_grid_v16']=json_native({'detector':diagnostic,'audit':audit})
+        return result,overlay,geometry
+    except Exception as exc:
+        # Do not turn a failed optional rescue into corrupt production output.
+        return None

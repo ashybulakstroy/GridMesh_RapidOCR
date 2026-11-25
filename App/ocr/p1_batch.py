@@ -110,6 +110,8 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
                 with rec_scope([key], 'primary_rec_cell'):
                     item = read_cell(cell.image, cell.row_id, cell.column_id, cell.offset)
                 item['source_bbox'] = cell.source_bbox
+                if cell.column_id == 'name':
+                    item['text_ocr_strategy'] = item.get('strategy', 'direct_or_detector')
                 item['strategy'] = 'primary_rec_cell'
                 out[key] = item
                 stats['cell_calls'] += 1

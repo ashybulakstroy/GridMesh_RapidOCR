@@ -95,12 +95,11 @@ def save_problem_digits(job_dir, rows, crops, book, corrections, original_crops=
     events=(rec_trace or {}).get('events',[])
     for key,cell in cells.items():
         if key[1] not in ('quantity','price','printed_total'):continue
-        if (parse_number(cell.get('text')) is None or cell.get('numeric_issue') or cell.get('auto_corrected') or not math_match
-                or (cell.get('confidence') is not None and float(cell['confidence'])<.8)):
+        if (parse_number(cell.get('text')) is None or cell.get('numeric_issue') or cell.get('auto_corrected') or not math_match):
             keys.add(key)
     for event in events:
         if (not event.get('success',True) or any(x in event.get('stage','') for x in ('retry','recovery','second_pass','e5_tesseract'))
-                or any(float(x)<.8 for x in event.get('confidences',[]))):
+                or (len(event.get('cells',[])) == 1 and event.get('texts') and any(parse_number(text) is None for text in event['texts']))):
             for key in event.get('cells',[]):
                 if ':' in key:
                     rid,field=key.split(':',1)
@@ -121,7 +120,6 @@ def save_problem_digits(job_dir, rows, crops, book, corrections, original_crops=
     footer_observations=book.get('footer',[])
     if (len({x['number'] for x in footer_observations if x.get('number') is not None})>1
             or any(x.get('number') is None for x in footer_observations)
-            or any(x.get('confidence') is not None and float(x['confidence'])<.8 for x in footer_observations)
             or (footer_context is not None and footer_context.get('total') is None)):
         keys.add((None,'receipt_total'))
     for bucket in book.get('cells',{}).values():
@@ -129,8 +127,6 @@ def save_problem_digits(job_dir, rows, crops, book, corrections, original_crops=
         if len({x['number'] for x in observations if x.get('number') is not None})>1:
             keys.add((bucket['row_id'],bucket['field']))
         elif any(x.get('number') is None for x in observations):
-            keys.add((bucket['row_id'],bucket['field']))
-        elif any(x.get('confidence') is not None and float(x['confidence'])<.8 for x in observations):
             keys.add((bucket['row_id'],bucket['field']))
     keys={key for key in keys if key[1] in ('quantity','price','printed_total','receipt_total','printed_vat')}
     if not keys:

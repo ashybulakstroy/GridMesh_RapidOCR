@@ -8,8 +8,8 @@ def primary_consistency(rows, printed_total, footer_attempts, *, min_cell_conf=.
                         min_footer_conf=.86):
     """True only when existing optical readings and Decimal arithmetic agree.
 
-    A matching sum does not prove optical ground truth. Model uncertainty and
-    evidence provenance still have to be checked by the matrix solver.
+    Confidence alone does not invalidate a numeric reading that agrees with
+    the photographed total; evidence is still checked by the matrix solver.
     """
     notes = []
     total = parse_number(printed_total)
@@ -26,13 +26,6 @@ def primary_consistency(rows, printed_total, footer_attempts, *, min_cell_conf=.
         if a is None or b is None or a < 0 or b < 0:
             notes.append(f"row_{row.get('row_id')}_invalid")
             continue
-        for field, cell in (('quantity', q), ('price', p)):
-            try:
-                conf = float(cell.get('confidence'))
-            except (TypeError, ValueError):
-                conf = 0.0
-            if conf < min_cell_conf:
-                notes.append(f"row_{row.get('row_id')}_{field}_low_confidence")
         if 'printed_total' in cells:
             line_total = parse_number(cells['printed_total'].get('text'))
             if line_total is None or abs(line_total - a * b) > Decimal('.01'):
@@ -49,12 +42,8 @@ def primary_consistency(rows, printed_total, footer_attempts, *, min_cell_conf=.
         observed = parse_number(attempt.get('total'))
         if observed is None or total is None or abs(observed-total) > Decimal('.01'):
             continue
-        conf = attempt.get('confidence')
-        if conf is None:
-            conf = min([line.get('confidence') or 0.0 for line in (attempt.get('lines') or [])] or [0.0])
-        if float(conf or 0) >= min_footer_conf:
-            footer_trusted = True
-            break
+        footer_trusted = True
+        break
     if not footer_trusted:
         notes.append('printed_footer_not_confirmed')
     return {'eligible': not notes, 'footer_trusted': footer_trusted,

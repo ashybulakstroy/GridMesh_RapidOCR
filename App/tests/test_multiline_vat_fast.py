@@ -31,6 +31,8 @@ class MultilineVatFastTest(unittest.TestCase):
                                       'price':{'text':'10', 'confidence':.9}}}]
         self.assertFalse(primary_consistency(rows, '20', [])['eligible'])
         self.assertTrue(primary_consistency(rows, '20', [{'total':'20', 'confidence':.95}])['eligible'])
+        rows[0]['cells']['quantity']['confidence'] = .1
+        self.assertTrue(primary_consistency(rows, '20', [{'total':'20', 'confidence':.1}])['eligible'])
         self.assertFalse(primary_consistency(rows, '21', [{'total':'21', 'confidence':.95}])['eligible'])
 
 

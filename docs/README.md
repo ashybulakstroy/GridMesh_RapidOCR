@@ -35,8 +35,11 @@ OCR: `rapidocr` 3.10.0, детектор PP-OCRv5 mobile и распознава
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-test.txt
+$env:LOG_LEVEL='INFO'
 .\.venv\Scripts\python.exe -m pytest App/tests -q -n 2
 ```
+
+Регрессии поиска сетки на разных чеках проверяют зафиксированные границы и повторяемость результата в одном процессе и в новых процессах: `.\.venv\Scripts\python.exe -m pytest App/tests/test_grid_search_regression.py -q`.
 
 Для дополнительной браузерной проверки необходим установленный Edge и `npm install --prefix App/tests`; после запуска `start.bat` выполняется `node App/tests/browser_check.cjs`. В тесте событие вставки имитируется, системный буфер обмена не меняется.
 

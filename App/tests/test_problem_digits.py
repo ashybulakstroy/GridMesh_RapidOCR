@@ -133,8 +133,17 @@ def test_low_confidence_failed_attempt_and_vat_conflict_are_included(tmp_path):
                      'model_id':'v5','wall_ms':10,'mode':'REC_only'}]}
     save_problem_digits(tmp_path,rows,{},book,{},rec_trace=trace)
     cells=json.loads((tmp_path/'problem_digits/manifest.json').read_text(encoding='utf-8'))['cells']
-    assert {(x['row_id'],x['field']) for x in cells}=={(1,'quantity'),(2,'price'),(3,'price'),(None,'printed_vat')}
-    assert cells[1]['recognition_attempts'][0]['duration_scope']=='shared_batch'
+    assert {(x['row_id'],x['field']) for x in cells}=={(2,'price'),(3,'price'),(None,'printed_vat')}
+    assert cells[0]['recognition_attempts'][0]['duration_scope']=='shared_batch'
+
+
+def test_low_confidence_alone_does_not_create_report(tmp_path):
+    rows=[{'row_id':1,'cells':{'quantity':{'text':'2','confidence':.1}}}]
+    trace={'events':[{'cells':['1:quantity'],'success':True,'stage':'primary_rec_cell','confidences':[.1]}]}
+    result=save_problem_digits(tmp_path,rows,{}, {'cells':{},'footer':[]},
+                               {'changes':[]}, rec_trace=trace, math_match=True)
+    assert result['count']==0
+    assert not (tmp_path/'problem_digits').exists()
 
 
 def test_rec_tracker_preserves_result_model_time_and_debug_input(monkeypatch):

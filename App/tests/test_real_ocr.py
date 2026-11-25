@@ -271,7 +271,7 @@ def test_budget_overrun_is_preserved_when_processing_later_fails(monkeypatch):
     assert profile['budget_events']
 
 
-def test_budget_limited_low_confidence_triggers_retry_even_if_total_matches(monkeypatch):
+def test_budget_limited_low_confidence_does_not_retry_if_total_matches(monkeypatch):
     original_read_batches = pipeline.read_batches
     def low_confidence(cells, **kwargs):
         results, stats = original_read_batches(cells, **kwargs)
@@ -283,10 +283,7 @@ def test_budget_limited_low_confidence_triggers_retry_even_if_total_matches(monk
     monkeypatch.setattr(pipeline, 'read_batches', low_confidence)
     result = process((HERE/'fixtures'/'receipt_29464.jpg').read_bytes())
     assert result['math_match']
-    check = next(event for event in result['processing_log'] if event['type']=='check')
-    assert check['budget_limited'] and check['low_confidence']
-    assert any(detail['row_id']==9 and detail['column_id']=='price'
-               for detail in result['geometry']['ocr_recovery']['double_budget']['details'])
+    assert result['geometry']['ocr_recovery']['double_budget']['attempted'] == 0
 
 
 def test_folded_receipt_recovers_printed_grid_and_all_amounts():

@@ -305,7 +305,27 @@ def _process(data, profile, job_dir, rectify):
     options = []
     for oriented in candidates:
         try:
-            rect, overlay, geometry = build_grid(oriented, rectify=rectify, phase=profile.phase)
+            # PAPER_FIRST_FULLGRID_V16: rescue only on error; verify the actual
+            # printed header for each candidate before promoting its grid.
+            def _v12_validate_header(_candidate):
+                if len(_candidate.xs) != 5:
+                    return False
+                _texts=[]
+                for _col in (1,2,3):
+                    _crop,_off,_=cell_crop(_candidate,0,_col)
+                    _texts.append(read_cell(_crop,0,'header',_off)['text'].casefold())
+                _header=' '.join(_texts).translate(str.maketrans({'ғ':'г','ң':'н','қ':'к'}))
+                return (bool(re.search(r'тауар|атау|наимен|назван',_header)) and
+                        bool(re.search(r'саны|кол.?во|колич|бага|бағ|цена',_header)))
+            try:
+                rect, overlay, geometry = build_grid(oriented, rectify=rectify, phase=profile.phase)
+            except (ValueError, cv2.error):
+                from .geometry.service import build_grid_paper_rescue
+                _rescue = build_grid_paper_rescue(oriented, rectify=rectify,
+                                                  phase=profile.phase, header_validator=_v12_validate_header)
+                if _rescue is None:
+                    raise
+                rect, overlay, geometry = _rescue
             if len(candidates) == 1:
                 options.append((1.0, oriented, rect, overlay, geometry))
                 break
@@ -334,8 +354,32 @@ def _process(data, profile, job_dir, rectify):
         except Exception as exc:
             failures.append(str(exc))
     if not options:
-        raise ValueError('Не удалось построить сетку: ' + '; '.join(failures))
+        from .geometry.service import build_grid_source_rescue
+        _candidate_image=candidates[0]
+        _candidate=build_grid_source_rescue(_candidate_image,rectify=rectify,
+                              phase=profile.phase,header_validator=_v12_validate_header)
+        if _candidate is None:
+            raise ValueError('Не удалось построить сетку: ' + '; '.join(failures))
+        _rect,_overlay,_geometry=_candidate
+        options.append((1.0,_candidate_image,_rect,_overlay,_geometry))
     score, image, rect, overlay, geometry = max(options, key=lambda item: item[0])
+    # PAPER_FIRST_FULLGRID_V16: reject an anomalously tall first band before
+    # numerical OCR starts. V4 runs at its normal speed on ordinary receipts.
+    if setting('OCR_SOURCE_GRID_V16','1') == '1' and len(rect.ys)>=5:
+        _bands=np.diff(np.asarray(rect.ys,dtype=float))
+        _typical=float(np.median(_bands[1:])) if len(_bands)>2 else 0.
+        _giant=bool(_typical>0 and _bands[0]>max(90.,3.0*_typical))
+        if _giant:
+            from .geometry.service import build_grid_source_rescue
+            _fixed=build_grid_source_rescue(image,rectify=rectify,
+                        phase=profile.phase,header_validator=_v12_validate_header)
+            if _fixed is None:
+                raise ValueError('V16: первая полоса сетки слишком высокая; '
+                    'печатная шапка не подтверждена, исходная сетка отклонена до OCR')
+            rect,overlay,geometry=_fixed
+            processing_log.append({'type':'operation',
+                'stage':'V16: восстановление полной сетки',
+                'message':'Заменена неполная сетка на источник-подтверждённую физическую сетку.'})
     if geometry.get('fold_recovered_horizontal'):
         count = geometry['fold_recovered_horizontal']
         processing_log.append({'type':'operation', 'stage':'Построение сетки',
@@ -351,29 +395,64 @@ def _process(data, profile, job_dir, rectify):
     numeric_issues = []
     xs = [int(round(x)) for x in rect.xs]; ys = [int(round(y)) for y in rect.ys]
     footer_focus_guide = guide_from_grid(rect, image.shape)
-    if len(xs) == 5:
-        columns = {'number':0, 'name':1, 'quantity':2, 'price':3}
-    else:
+    # PAPER_FIRST_FULLGRID_V16: VAT/НДС is optional. Header must be the
+    # photographed header, not the tenth product row of a partial grid.
+    def _v12_read_columns(grid, rescued=False):
+        if len(grid.xs)==5:
+            # Only rescued grids pay for a header OCR proof; preserve V4 speed.
+            if rescued:
+                observed=[]
+                for idx in (1,2,3):
+                    crop,off,_=cell_crop(grid,0,idx)
+                    observed.append(read_cell(crop,0,'header',off)['text'].casefold())
+                header=' '.join(observed).translate(str.maketrans({'ғ':'г','ң':'н','қ':'к'}))
+                names=bool(re.search(r'тауар|атау|наимен|назван',header))
+                numeric=bool(re.search(r'саны|кол.?во|колич|бага|бағ|цена',header))
+                if not (names and numeric):
+                    raise ValueError('V12: верхняя строка не подтверждена как заголовок: '+header)
+            return {'number':0,'name':1,'quantity':2,'price':3}
         profile.phase('Определяем столбцы по заголовку')
-        columns = {}
-        header_texts = []
-        for k, (left,right) in enumerate(zip(xs,xs[1:])):
-            header_crop, header_offset, _ = cell_crop(rect, 0, k)
-            head = read_cell(header_crop, 0, 'header', header_offset)['text']
-            header_texts.append(head)
-            clean = head.casefold().translate(str.maketrans({'r':'г','b':'ы','ғ':'г','ң':'н','қ':'к'}))
-            if re.search(r'атау|наимен|назван', clean): role = 'name'
-            elif re.search(r'саны|кол.?во|колич', clean): role = 'quantity'
-            elif re.search(r'бага|цена|стоим', clean): role = 'price'
-            elif re.search(r'сома|сумм', clean): role = 'printed_total'
-            elif re.fullmatch(r'\s*(?:№|n[oеe]?|no\.?|#)\s*', clean): role = 'number'
-            else: continue
-            if role in columns:
-                raise ValueError('Заголовки таблицы прочитаны неоднозначно; проверьте фотографию.')
-            columns[role] = k
-        missing = {'number','name','quantity','price'} - columns.keys()
-        if missing:
-            raise ValueError('Не удалось уверенно определить столбцы по заголовку: ' + ', '.join(header_texts))
+        seen={}; texts=[]
+        for k in range(len(grid.xs)-1):
+            crop,offset,_=cell_crop(grid,0,k)
+            head=read_cell(crop,0,'header',offset)['text']
+            texts.append(head)
+            clean=head.casefold().translate(str.maketrans({'r':'г','b':'ы','ғ':'г','ң':'н','қ':'к'}))
+            if re.search(r'атау|наимен|назван',clean):role='name'
+            elif re.search(r'саны|кол.?во|колич',clean):role='quantity'
+            elif re.search(r'бага|цена|стоим',clean):role='price'
+            elif re.search(r'сома|сумм',clean):role='printed_total'
+            elif re.fullmatch(r'\s*(?:№|n[oеe]?|no\.?|#)\s*',clean):role='number'
+            else:continue
+            if role in seen:
+                raise ValueError('Заголовки определены неоднозначно: '+', '.join(texts))
+            seen[role]=k
+        if {'number','name','quantity','price'}-seen.keys():
+            raise ValueError('Не определены заголовки: '+', '.join(texts))
+        return seen
+    try:
+        columns=_v12_read_columns(rect, rescued=bool(geometry.get('paper_first_v12')))
+    except ValueError as _v12_error:
+        from .geometry.service import build_grid_paper_rescue
+        _v12_rescue=build_grid_paper_rescue(image,rectify=rectify,
+                                         phase=profile.phase,header_validator=_v12_validate_header)
+        if _v12_rescue is None:
+            from .geometry.service import build_grid_source_rescue
+            _v12_rescue=build_grid_source_rescue(image,rectify=rectify,
+                             phase=profile.phase,header_validator=_v12_validate_header)
+            if _v12_rescue is None:
+                raise _v12_error
+        _v12_rect,_v12_overlay,_v12_geometry=_v12_rescue
+        # Never promote a graph whose actual OCR header is unreadable.
+        columns=_v12_read_columns(_v12_rect,rescued=True)
+        rect,overlay,geometry=_v12_rect,_v12_overlay,_v12_geometry
+        xs=[int(round(x)) for x in rect.xs]
+        ys=[int(round(y)) for y in rect.ys]
+        footer_focus_guide=guide_from_grid(rect,image.shape)
+        (job_dir/'rectified.png').write_bytes(cv2.imencode('.png',overlay)[1].tobytes())
+        profile.publish({'preview_ready':True,'rectification':geometry['rectification']})
+        processing_log.append({'type':'operation','stage':'V12 PaperFirst recovery',
+            'message':'Частичная таблица отклонена; использована полная сетка по бумаге.'})
     geometry['columns'] = columns
     # First band is the table header. All subsequent bands are physical rows.
     # P1: extract each cell once, then submit single-line recognition in batches.
@@ -443,7 +522,8 @@ def _process(data, profile, job_dir, rectify):
             # VAT name may be split across several observed printed fragments.
             old = cells['name']
             candidate = next(c for c in cell_requests if c.row_id == idx and c.column_id == 'name')
-            alternate = read_cell(candidate.image, idx, 'name', candidate.offset, force_single=True)
+            with rec_scope([(idx,'name')], 'vat_name_retry'):
+                alternate = read_cell(candidate.image, idx, 'name', candidate.offset, force_single=True)
             if re.search(r'[нh][дd][сc]|vat',alternate['text'],re.I):
                 alternate['source_bbox'] = candidate.source_bbox
                 cells['name'] = alternate
@@ -538,8 +618,7 @@ def _process(data, profile, job_dir, rectify):
                           batch_stats.get('numeric_roi_currency_skipped_cells'))
     low_confidence = any(float(row['cells'][field].get('confidence') or 0) < .80
                          for row in rows for field in ('quantity', 'price'))
-    retry_required = (incomplete_before or receipt_mismatch or row_mismatch or
-                      missing_total or (budget_limited and low_confidence))
+    retry_required = incomplete_before or receipt_mismatch or row_mismatch or missing_total
     expanded_recovery = {'attempted':0, 'details':[], 'changed':[], 'candidates':[], 'batch':None}
     if retry_required and (not e4_enabled or setting('OCR_E4_ROUTE_RETRIES','1') != '1'):
         processing_log.append({'type':'check', 'stage':'Контроль сумм',
@@ -1015,6 +1094,16 @@ def _process(data, profile, job_dir, rectify):
     map_path = job_dir/'rectification_map.npz'
     np.savez_compressed(map_path, map_x=rect.map_x, map_y=rect.map_y)
     geometry['inverse_map'] = str(map_path.relative_to(ROOT)).replace('\\', '/')
+    problem_text = None
+    try:
+        from .ocr.text_debug import save_text_debug
+        from .ocr.experiment_rec_trace import current_text_inputs
+        text_inputs, text_dropped = current_text_inputs()
+        problem_text = save_text_debug(job_dir, rows, cell_requests, image, rect, columns, current_trace(), text_inputs, text_dropped)
+        if problem_text:
+            processing_log.append({'type':'debug','stage':'Проблемный текст','message':f"Текст: {problem_text['suspects']} подозрительных ячеек; отчёт problem_text/report.html"})
+    except Exception as exc:
+        processing_log.append({'type':'error','stage':'Проблемный текст','message':f'{type(exc).__name__}: {exc}'})
     problem_digits = None
     if debug_perf is not None:
         from .ocr.problem_digits import save_problem_digits
@@ -1037,6 +1126,7 @@ def _process(data, profile, job_dir, rectify):
                 'message':f'Не удалось сохранить фото цифровых ячеек: {type(exc).__name__}: {exc}'})
     return {'status': 'review' if geometry['warnings'] else 'ok', 'geometry': geometry,
             'problem_digits': problem_digits,
+            'problem_text': problem_text,
             'processing_log': processing_log,
             'original': png(image), 'rectified': png(overlay), 'rows': rows,
             'numeric_issues': numeric_issues,
@@ -1096,6 +1186,17 @@ def read_printed_footer(image, y_bottom, rows=(), *, footer_guide=None):
                     'accepted':focused['accepted'],
                     'result':focused['total']}
         focused_attempt=focused['attempt']
+        if not focused['accepted'] and focused_attempt and rows and all(r['line_total'] is not None for r in rows):
+            observed = number(focused_attempt.get('unaccepted_numeric_candidate'))
+            calculated = sum((Decimal(r['line_total']) for r in rows), Decimal(0))
+            if observed is not None and abs(calculated-observed) <= Decimal('0.01'):
+                x0,y0,x1,y1 = focused_attempt['source_roi_bbox']
+                line = {'text':focused_attempt['text'], 'confidence':focused_attempt['confidence'],
+                        'bbox':[[x0,y0],[x1,y0],[x1,y1],[x0,y1]]}
+                focused_attempt.update(total=str(observed), lines=[line], status='accepted_by_arithmetic')
+                focus_info.update(accepted=True, result=str(observed))
+                return {'total':str(observed), 'lines':[line], 'attempts':[focused_attempt],
+                        'y_bottom':y_bottom, 'footer_focus':focus_info}
         if focused['accepted']:
             return {'total':focused['total'],'lines':focused['lines'],
                     'attempts':[focused_attempt], 'y_bottom':y_bottom,
@@ -1149,7 +1250,7 @@ def read_printed_footer(image, y_bottom, rows=(), *, footer_guide=None):
         candidate = number(direct['text']) if re.fullmatch(r'[\d\s,.]+\s*[TТ₸]?', direct['text'].strip()) else None
         footer_attempts.append({'strategy':'single_line', 'total':str(candidate) if candidate is not None else None, 'lines':[direct]})
         if (candidate is not None and (direct['confidence'] >= .93 or
-                (direct['confidence'] >= .8 and bool(rows) and all(r['line_total'] is not None for r in rows)
+                (bool(rows) and all(r['line_total'] is not None for r in rows)
                  and abs(current_sum-candidate) <= Decimal('0.01')))):
             total, footer_lines = str(candidate), [direct]
         # An independent recognizer can confirm a readable but sub-threshold
@@ -1192,7 +1293,7 @@ def read_printed_footer(image, y_bottom, rows=(), *, footer_guide=None):
             footer_attempts.append({'strategy':'compact_line', 'total':str(candidate) if candidate is not None else None, 'lines':[line]})
             if candidate is None or candidate <= 0:
                 continue
-            if line['confidence'] >= .93 or (line['confidence'] >= .75 and bool(rows) and all(r['line_total'] is not None for r in rows) and abs(current_sum-candidate) <= Decimal('0.01')):
+            if line['confidence'] >= .93 or (bool(rows) and all(r['line_total'] is not None for r in rows) and abs(current_sum-candidate) <= Decimal('0.01')):
                 total, footer_lines = str(candidate), [line]
                 break
             if line['confidence'] >= .80:
@@ -1209,7 +1310,7 @@ def read_printed_footer(image, y_bottom, rows=(), *, footer_guide=None):
             total, footer_lines, total_confidence = None, [], 0.0
             footer_attempts.append({'strategy':'fast_detector', 'scale':1,
                                     'error':f'{type(exc).__name__}: {exc}'})
-        if total is None or total_confidence < .85:
+        if total is None or (total_confidence < .85 and not (bool(rows) and all(r['line_total'] is not None for r in rows) and abs(current_sum-number(total)) <= Decimal('0.01'))):
             total, footer_lines, total_confidence = read_total(1)
             footer_attempts.append({'strategy':'standard_detector', 'scale':1, 'total':total,
                                     'confidence':total_confidence, 'lines':footer_lines})

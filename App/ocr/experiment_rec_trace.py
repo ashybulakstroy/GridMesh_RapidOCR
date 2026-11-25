@@ -18,6 +18,10 @@ class RecTracker:
     def __init__(self):
         self.events=[]
         self.inputs={}
+        self.text_inputs={}
+        self.text_bytes=0
+        self.text_dropped=0
+        self.capture_text=setting("OCR_TEXT_DEBUG_ENABLE","1")=="1"
         self.lock=Lock()
         self.capture_images=setting('LOG_LEVEL','INFO').upper()=='DEBUG'
     def record(self,keys,stage,model,mode,ms,*,success=True,note=None,image=None,result=None):
@@ -35,6 +39,13 @@ class RecTracker:
             event['event_id']=len(self.events)
             self.events.append(event)
             numeric=any(k in ('receipt_total','printed_vat') or k.endswith((':price',':quantity',':printed_total')) for k in keys)
+            if self.capture_text and any(k.endswith(':name') for k in keys) and image is not None:
+                selected = {k:v for k,v in zip(keys,image) if k.endswith(':name') and v.size} if isinstance(image,list) else {k:image for k in keys if k.endswith(':name') and image.size}
+                size=sum(v.nbytes for v in selected.values())
+                if selected and self.text_bytes+size <= 32*1024*1024:
+                    self.text_inputs[event['event_id']]={k:v.copy() for k,v in selected.items()}
+                    self.text_bytes+=size
+                elif selected:self.text_dropped+=1
             if self.capture_images and numeric and image is not None:
                 if isinstance(image,list):
                     self.inputs[event['event_id']]={key:value.copy() for key,value in zip(keys,image) if value.size}
@@ -88,3 +99,8 @@ def record_rec(*,model='v5_cyrillic_mobile',mode='REC_only',ms=0,success=True,no
     keys=keys if keys is not None else (current[0] if current else ['unattributed'])
     stage=stage if stage is not None else (current[1] if current else 'unscoped')
     tracker.record(keys,stage,model,mode,ms,success=success,note=note,image=image,result=result)
+
+
+def current_text_inputs():
+    tracker=_CURRENT.get()
+    return (tracker.text_inputs,tracker.text_dropped) if tracker else ({},0)

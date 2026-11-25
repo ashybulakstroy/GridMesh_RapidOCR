@@ -104,8 +104,6 @@ def recover_invalid_and_rows(rows, crop_map, *, max_retries=8):
                 priority, reason = 0, 'invalid_number'
             elif row.get('printed_line_match') is False:
                 priority, reason = 1, 'printed_row_mismatch'
-            elif confidence < .80:
-                priority, reason = 2, 'low_confidence'
             else:
                 continue
             options.append((priority, confidence, row['row_id'], field, row, reason))
