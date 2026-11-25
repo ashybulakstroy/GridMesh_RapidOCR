@@ -1,0 +1,52 @@
+[
+  {
+    "digit": "0",
+    "file": "templates/template_0.png",
+    "source": "eef475 archive rectified.png, manual crop (493, 247, 509, 270)"
+  },
+  {
+    "digit": "1",
+    "file": "templates/template_1.png",
+    "source": "eef475 archive rectified.png, manual crop (379, 320, 395, 343)"
+  },
+  {
+    "digit": "2",
+    "file": "templates/template_2.png",
+    "source": "eef475 archive rectified.png, manual crop (381, 410, 398, 431)"
+  },
+  {
+    "digit": "3",
+    "file": "templates/template_3.png",
+    "source": "eef475 archive rectified.png, manual crop (450, 247, 465, 270)"
+  },
+  {
+    "digit": "4",
+    "file": "templates/template_4.png",
+    "source": "eef475 archive rectified.png, manual crop (35, 319, 53, 343)"
+  },
+  {
+    "digit": "5",
+    "file": "templates/template_5.png",
+    "source": "eef475 archive rectified.png, manual crop (455, 512, 471, 535)"
+  },
+  {
+    "digit": "6",
+    "file": "templates/template_6.png",
+    "source": "eef475 archive rectified.png, manual crop (37, 516, 53, 539)"
+  },
+  {
+    "digit": "7",
+    "file": "templates/template_7.png",
+    "source": "eef475 archive rectified.png, manual crop (38, 594, 54, 617)"
+  },
+  {
+    "digit": "8",
+    "file": "templates/template_8.png",
+    "source": "eef475 archive rectified.png, manual crop (454, 319, 467, 343)"
+  },
+  {
+    "digit": "9",
+    "file": "templates/template_9.png",
+    "source": "eef475 archive rectified.png, manual crop (465, 247, 480, 270)"
+  }
+]

@@ -157,6 +157,8 @@ class CandidateBook:
         return book
 
     def possible_values(self, row_id, field, *, limit=4):
+        # PARTIAL_DIGIT_MATRIX_TRIAL_V1: only the isolated copy sets this attribute.
+        limit = max(limit, min(16, getattr(self, 'partial_trial_limit', 4)))
         bucket = self.cells.get(self.key(row_id, field))
         if bucket is None:
             return []
@@ -241,7 +243,7 @@ def solve_matrix(rows, book, vat_rate, *, max_nodes=100000, per_row_cap=64):
     vat_all = {o['number'] for o in book.vat if o['number'] is not None}
     vat_overflow = len(vat_all)>6 and not any(o['authority']=='user_confirmed' for o in book.vat)
     cell_overflow = any(
-        len({o['number'] for o in bucket.get('observations', []) if o['number'] is not None}) > 4
+        len({o['number'] for o in bucket.get('observations', []) if o['number'] is not None}) > max(4, min(16, getattr(book, 'partial_trial_limit', 4)))
         for bucket in book.cells.values() if not bucket.get('user_locked'))
     choices, shortened = [], (len(footer_all)>6 or cell_overflow or vat_overflow)
     for row in rows:

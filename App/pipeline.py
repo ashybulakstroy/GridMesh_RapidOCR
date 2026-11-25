@@ -1153,6 +1153,26 @@ def _process_route_body(data, profile, job_dir, rectify):
                 printed_vat_observed = (observed_vat_text(
                     book, preferred=numeric_matrix['solutions'][0].get('vat_printed'))
                     or printed_vat_observed)
+            # PARTIAL_DIGIT_MATRIX_TRIAL_V1: shadow only, no changes to ordinary E4.
+            if (setting('OCR_PARTIAL_DIGIT_TRIAL','1') == '1' and
+                    numeric_matrix.get('status') in ('no_solution','insufficient_candidates') and
+                    not numeric_matrix.get('search_truncated')):
+                try:
+                    from .ocr.partial_digit_lab.partial_digit_trial import trial as _partial_trial, METHODS, EXTENDED
+                    _partial_result = _partial_trial(rows, crop_map, book, vat_rate,
+                        solve_matrix, parse_number, prepare_numeric_input,
+                        budget_ms=min(300,positive_int('OCR_PARTIAL_DIGIT_BUDGET_MS',180)),
+                        max_cells=min(3,positive_int('OCR_PARTIAL_DIGIT_MAX_CELLS',3)),
+                        max_nodes=min(100000,positive_int('OCR_MATRIX_MAX_NODES',100000)),
+                        methods=EXTENDED if setting('OCR_PARTIAL_DIGIT_HAUSDORFF','0') == '1' else METHODS)
+                    geometry['partial_digit_trial'] = _partial_result
+                    processing_log.append({'type':'operation','stage':'Partial Digit E4 shadow',
+                        'message':'Гипотезы повреждённых цифр: '+str(_partial_result.get('added_hypotheses',0))+
+                                  '; решения: '+str(len(_partial_result.get('matrix',{}).get('solutions',[])))+
+                                  '; требуется проверка.', 'status':_partial_result['status']})
+                except Exception as _partial_exc:
+                    geometry['partial_digit_trial'] = {'status':'error','review_only':True,
+                        'error':f'{type(_partial_exc).__name__}: {_partial_exc}'}
             numeric_auto_corrections = auto_apply_consensus(
                 rows,book,numeric_matrix,total,
                 enabled=setting('OCR_E4_AUTO_APPLY','1') == '1')
