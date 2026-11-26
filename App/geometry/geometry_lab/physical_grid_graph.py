@@ -81,6 +81,11 @@ def connected_fragments(parts, width, tolerance=3.0):
 
     Complete-link compatibility prevents transitive chains joining adjacent rows.
     """
+    # SHORT_GRID_ROUTING_V3
+    from ..grid_kernels_v3 import mode as _fragment_setting
+    if _fragment_setting('OCR_GRID_FRAGMENTS_V3','0')=='1':
+        from ..grid_kernels_v3 import connected_fast
+        return connected_fast(parts,width,tolerance)
     def compatible(a,b):
         _,(ax,ay,bx,by),_=a; _,(cx,cy,dx,dy),_=b
         if bx<ax: ax,ay,bx,by=bx,by,ax,ay

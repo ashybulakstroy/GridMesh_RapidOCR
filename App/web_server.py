@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from .ocr import warmup
 from .ocr.experiment_manual import apply_user_receipt
-from .config import setting
+from .config import setting, output_directory, display_path
 
 ROOT = Path(__file__).resolve().parents[1]
 @asynccontextmanager
@@ -88,8 +88,9 @@ def get_job(job_id: str):
 def get_preview(job_id: str):
     with jobs_lock:
         if job_id not in jobs: raise HTTPException(404, 'Задание не найдено')
-    directory = (ROOT / setting('OUTPUT_DIR', 'data/output') / job_id).resolve()
-    if not directory.is_relative_to(ROOT) or not (directory/'rectified.png').is_file():
+    output_dir = output_directory()
+    directory = (output_dir / job_id).resolve()
+    if not directory.is_relative_to(output_dir) or not (directory/'rectified.png').is_file():
         raise HTTPException(404, 'Сетка ещё не готова')
     return FileResponse(directory/'rectified.png', media_type='image/png')
 
@@ -98,9 +99,10 @@ def download_early_result(job_id: str):
     with jobs_lock:
         if job_id not in jobs:
             raise HTTPException(404, 'Задание не найдено')
-    directory = (ROOT / setting('OUTPUT_DIR', 'data/output') / job_id).resolve()
+    output_dir = output_directory()
+    directory = (output_dir / job_id).resolve()
     path = directory/'e4_early_result.json'
-    if not directory.is_relative_to(ROOT) or not path.is_file():
+    if not directory.is_relative_to(output_dir) or not path.is_file():
         raise HTTPException(404, 'Предварительный результат ещё не готов')
     return FileResponse(path, media_type='application/json',filename='e4_early_result.json')
 
@@ -110,7 +112,7 @@ def save_edited_receipt(job_id: str, receipt: dict):
         job = jobs.get(job_id)
         if not job or job['status'] != 'done': raise HTTPException(404, 'Готовое задание не найдено')
         directory = (ROOT / job['result']['job_directory']).resolve()
-    if not directory.is_relative_to(ROOT) or receipt.get('job_id') != job_id or not isinstance(receipt.get('rows'), list):
+    if not directory.is_relative_to(output_directory()) or receipt.get('job_id') != job_id or not isinstance(receipt.get('rows'), list):
         raise HTTPException(400, 'Некорректные данные чека')
     # Server independently recomputes Decimal arithmetic and locks valid
     # browser-confirmed figures; never trust client-provided math flags.
@@ -131,4 +133,4 @@ def save_edited_receipt(job_id: str, receipt: dict):
     truth_tmp.replace(truth)
     with jobs_lock:
         jobs[job_id]['result']={**job['result'],**clean}
-    return {'saved': True, 'file': str(target.relative_to(ROOT)).replace('\\','/'), 'receipt': clean}
+    return {'saved': True, 'file': display_path(target), 'receipt': clean}

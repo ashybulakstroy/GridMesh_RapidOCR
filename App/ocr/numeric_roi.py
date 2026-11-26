@@ -257,3 +257,18 @@ def crop_numeric_ink(image):
     return image[ty:by, lx:rx].copy(), {
         'changed': True, 'reason': 'ink_roi', 'offset': [lx,ty],
         'size': [rx-lx,by-ty], 'original_size': [w,h]}
+
+# TALL_NUMERIC_ROI_V1
+_legacy_crop_numeric_ink_v1 = crop_numeric_ink
+
+def crop_numeric_ink(image):
+    cropped, roi = _legacy_crop_numeric_ink_v1(image)
+    if image is None or not image.size or image.shape[0] < 65:
+        return cropped, roi
+    if roi.get('changed') and cropped.shape[0] < image.shape[0] * .55:
+        return cropped, roi
+    from ..config import setting
+    if setting('OCR_TALL_NUMERIC_ROI_V1', '1') != '1':
+        return cropped, roi
+    from .tall_numeric_roi import improve
+    return improve(image, cropped, roi)

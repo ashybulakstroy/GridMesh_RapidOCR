@@ -37,6 +37,9 @@ def choose(data, report, image):
     # GRID_ANOMALY_V5_BIDIRECTIONAL
     from ..config import setting
     h=len(data.get('horizontal', [])); v=len(data.get('vertical', []))
+    # SHORT_GRID_ROUTING_V3
+    from .short_grid_v3 import is_short
+    if is_short(data):return True
     if v==2 and setting('OCR_GRID_ROUTE_TWO_RAILS_V2','0')=='1':
         return h>=state.min_horizontal
     return _grid_diag.ret((h>=state.min_horizontal and v in (3,4)), locals(), 'App/geometry/detector_routing_v1.py:choose:L35')

@@ -120,19 +120,25 @@ def trace_seed(response,seed,xs,dark=None):
     rewards[anchor,abs(offsets)>3]=-1e4
     if _capture:
         _now=perf_counter_ns();_steps['подготовка и выборка']=(_now-_tick)/1e6;_tick=_now
-    score=rewards[0].copy();parents=np.zeros((N,K),np.int16)
-    # Reuse one padded buffer and its five-neighbor views for every column.
-    # The order matches shifts -2..2, including the original tie handling.
-    padded=np.full(K+4,-1e6)
-    neighbors=np.lib.stride_tricks.sliding_window_view(padded,5)[:,::-1]
-    penalties=.13*np.abs(np.arange(-2,3))
-    positions=np.arange(K)
-    for i in range(1,N):
-        padded[2:-2]=score
-        candidates=neighbors-penalties
-        choice=np.argmax(candidates,axis=1)
-        parents[i]=positions-(choice-2)
-        score=candidates[positions,choice]+rewards[i]
+    # SHORT_GRID_ROUTING_V3
+    from ..grid_kernels_v3 import mode as _dp_setting
+    if _dp_setting('OCR_GRID_TRACE_DP_V3','off') in ('numpy','numba'):
+        from ..grid_kernels_v3 import trace_dp
+        score,parents=trace_dp(rewards)
+    else:
+        score=rewards[0].copy();parents=np.zeros((N,K),np.int16)
+        # Reuse one padded buffer and its five-neighbor views for every column.
+        # The order matches shifts -2..2, including the original tie handling.
+        padded=np.full(K+4,-1e6)
+        neighbors=np.lib.stride_tricks.sliding_window_view(padded,5)[:,::-1]
+        penalties=.13*np.abs(np.arange(-2,3))
+        positions=np.arange(K)
+        for i in range(1,N):
+            padded[2:-2]=score
+            candidates=neighbors-penalties
+            choice=np.argmax(candidates,axis=1)
+            parents[i]=positions-(choice-2)
+            score=candidates[positions,choice]+rewards[i]
     if _capture:
         _now=perf_counter_ns();_steps['поиск пути']=(_now-_tick)/1e6;_tick=_now
     index=int(np.argmax(score));indices=np.empty(N,int);indices[-1]=index

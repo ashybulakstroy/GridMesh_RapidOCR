@@ -191,12 +191,18 @@ def detect_physical_graph(image, *, prefer_multiscale=False, min_rows=0, automat
     if prefer_multiscale:
         _route.attempt()
         _trial_t=perf_counter()
-        _candidate,_trial_report=_multiscale_core(gray,response,dark,None,{'status':'NOT_RUN'})
+        # SHORT_GRID_ROUTING_V3
+        from ..short_grid_v3 import is_short,trial as _short_trial
+        _short=is_short(automatic)
+        if _short:
+            _candidate,_trial_report,_accepted=_short_trial(image,gray,response,dark,automatic,min_rows,_multiscale_core,_multiscale_core_impl,multiscale_segments)
+        else:
+            _candidate,_trial_report=_multiscale_core(gray,response,dark,None,{'status':'NOT_RUN'})
+            _accepted=_route.accept_candidate(_candidate,min_rows)
         _trial=(_candidate,_trial_report)
-        _accepted=_route.accept_candidate(_candidate,min_rows)
         # GRID_ANOMALY_V5_BIDIRECTIONAL: prove missing edges before relaxing row census.
         from ...config import setting as _v5_setting
-        if (not _accepted and _candidate is not None and _v5_setting('OCR_GRID_ROUTE_TWO_RAILS_V2','0')=='1' and
+        if (not _short and not _accepted and _candidate is not None and _v5_setting('OCR_GRID_ROUTE_TWO_RAILS_V2','0')=='1' and
                 _v5_setting('OCR_GRID_ANOMALY_V5','0')=='1' and _route.accept_candidate(_candidate,3)):
             try:
                 from ..grid_anomaly_v5 import recover as _recover_v5
@@ -211,7 +217,7 @@ def detect_physical_graph(image, *, prefer_multiscale=False, min_rows=0, automat
             except (ValueError,TypeError,IndexError,KeyError,cv2.error,OverflowError) as _v5_exc:
                 _route.record('v5_route_repair',accepted=False,reason=str(_v5_exc))
         # GRID_ANOMALY_V51_FULL_COMPLETENESS: use actual AutoGrid rule hints before V2.
-        if (not _accepted and automatic is not None and _candidate is not None and
+        if (not _short and not _accepted and automatic is not None and _candidate is not None and
                 _v5_setting('OCR_GRID_ANOMALY_V5','0')=='1' and
                 _v5_setting('OCR_GRID_ANOMALY_V51_INTERNAL','0')=='1' and _route.accept_candidate(_candidate,3)):
             try:

@@ -20,6 +20,7 @@ from .ocr.cell_mode import read_parallel
 from .ocr.e4_adaptive_early import adaptive_collect, make_early_snapshot, compare_early_final
 from .ocr.e4_fast_gate import primary_consistency, prioritize_suspects
 from .ocr.p1_numbers import parse_number
+from .ocr.vat_marker_strict_v1 import vat_marker as _vat_marker_strict
 from .ocr.numeric_roi import crop_numeric_ink, prepare_numeric_input
 from .ocr.price_candidate import prepare_price_candidate
 from .ocr.p1_recovery import recover_invalid_and_rows, recover_total_mismatch
@@ -34,7 +35,7 @@ from .ocr.experiment_vat import scan_printed_vat, seed_printed_vat, observed_vat
 from .ocr.experiment_models import ExperimentModelPool
 from .ocr.experiment_rec_trace import RecTracker, activate, deactivate, rec_scope, current_trace, current_inputs
 from .ocr.experiment_auto import auto_apply_consensus
-from .config import positive_int, setting, ROOT
+from .config import positive_int, setting, ROOT, output_directory, display_path
 from .ocr.ocr_performance import OCRPerformance
 from .ocr.debug_performance import (activate_telemetry, deactivate_telemetry,
     bind_profile, get_debug, report_issue)
@@ -142,7 +143,7 @@ def recover_tax_below_grid(image, rect, columns, row_id):
     if name_band is None:
         return None
     name = read_line(name_band[0])
-    if not name or name['confidence'] < .65 or not re.search(r'[нh][дd][сc]\s*\d{1,2}\s*%', name['text'], re.I):
+    if not name or name['confidence'] < .65 or not _vat_marker_strict(name['text'], require_rate=True):
         return None
     # The total label can cross the number/name column boundary. Read both
     # together below the VAT band and require a known, observed footer word.
@@ -207,8 +208,7 @@ def _process_job(data, publish=None, job_id=None, *, rectify=False, rec_tracker)
         job_id = uuid.uuid4().hex
     if not re.fullmatch(r'[a-f0-9]{32}', job_id):
         raise ValueError('Некорректный идентификатор задания')
-    output_dir = (ROOT / setting('OUTPUT_DIR', 'data/output')).resolve()
-    if not output_dir.is_relative_to(ROOT): raise ValueError('OUTPUT_DIR должен быть внутри проекта')
+    output_dir = output_directory()
     job_dir = output_dir / job_id
     job_dir.mkdir(parents=True, exist_ok=False)
     _grid_diag.bind(job_dir)
@@ -257,7 +257,7 @@ def _process_job(data, publish=None, job_id=None, *, rectify=False, rec_tracker)
         performance['debug']=debug_perf.finish(result['rec_trace'])
     result['performance'] = performance
     result['job_id'] = job_id
-    result['job_directory'] = str(job_dir.relative_to(ROOT)).replace('\\', '/')
+    result['job_directory'] = display_path(job_dir)
     result['performance_file'] = f"{result['job_directory']}/performance_profile.json"
     result['processing_log_file'] = f"{result['job_directory']}/processing_log.json"
     result['timings']['total_s'] = round(performance['wall_ms']/1000, 3)
@@ -294,7 +294,7 @@ def _process_job(data, publish=None, job_id=None, *, rectify=False, rec_tracker)
             from .ocr.performance_deep.runtime_export import export as export_performance
             diagnostic_path=export_performance(job_dir,rec_tracker)
             if diagnostic_path is not None:
-                result['problem_performance']={'report':diagnostic_path.relative_to(ROOT).as_posix()}
+                result['problem_performance']={'report':display_path(diagnostic_path)}
                 receipt['problem_performance']=result['problem_performance']
                 (job_dir/'receipt.json').write_text(json.dumps(receipt, ensure_ascii=False, indent=2), encoding='utf-8')
         except Exception as exc:
@@ -376,6 +376,17 @@ def _process_route_body(data, profile, job_dir, rectify):
             def _v12_validate_header(_candidate):
                 if len(_candidate.xs) != 5:
                     return _grid_diag.ret((False), locals(), 'App/pipeline.py:_process_route_body:_v12_validate_header:L367')
+                # GRID_ANOMALY_V53_SAFE_EXTRA
+                if _candidate.info.get('v53_require_strict_header'):
+                    from .geometry.grid_anomaly_v53 import strict_header
+                    if _candidate.info.get('v53_header_confirmed'):return True
+                    _v53_texts=[]
+                    for _col in range(4):
+                        _crop,_off,_=cell_crop(_candidate,0,_col)
+                        _v53_texts.append(read_cell(_crop,0,'header',_off)['text'])
+                    _v53_ok=strict_header(_v53_texts)
+                    if _v53_ok:_candidate.info['v53_header_confirmed']=True
+                    return _v53_ok
                 _texts=[]
                 for _col in (1,2,3):
                     _crop,_off,_=cell_crop(_candidate,0,_col)
@@ -478,6 +489,8 @@ def _process_route_body(data, profile, job_dir, rectify):
     # photographed header, not the tenth product row of a partial grid.
     def _v12_read_columns(grid, rescued=False):
         if len(grid.xs)==5:
+            if grid.info.get('v53_require_strict_header') and not _v12_validate_header(grid):
+                raise ValueError('V53: four ordered header roles not confirmed')
             # Only rescued grids pay for a header OCR proof; preserve V4 speed.
             if rescued:
                 observed=[]
@@ -765,13 +778,13 @@ def _process_route_body(data, profile, job_dir, rectify):
                 elif decision == 'uncertain_no_retry':
                     cells['name']['vat_name_review'] = True
         else:
-            if idx == body_row_count and not re.search(r'[нh][дd][сc]|vat',cells['name']['text'],re.I):
+            if idx == body_row_count and not _vat_marker_strict(cells['name']['text']):
                 # VAT name may be split across several observed printed fragments.
                 old = cells['name']
                 candidate = next(c for c in cell_requests if c.row_id == idx and c.column_id == 'name')
                 with rec_scope([(idx,'name')], 'vat_name_retry'):
                     alternate = read_cell(candidate.image, idx, 'name', candidate.offset, force_single=True)
-                if re.search(r'[нh][дd][сc]|vat',alternate['text'],re.I):
+                if _vat_marker_strict(alternate['text']):
                     alternate['source_bbox'] = candidate.source_bbox
                     cells['name'] = alternate
         name_text = cells['name']['text'].strip()
@@ -779,7 +792,7 @@ def _process_route_body(data, profile, job_dir, rectify):
             geometry['warnings'].append(f'Строка {idx}: низкая уверенность в наименовании, проверьте текст.')
         if not name_text and not cells['quantity']['text'] and not cells['price']['text']:
             geometry['warnings'].append(f'Строка {idx} не распознана: проверьте сетку.')
-        vat = bool(re.search(r'[нh][дd][сc]|vat',name_text,re.I))
+        vat = bool(_vat_marker_strict(name_text))
         if vat: cells['number']['text'] = ''  # Tax line is not a product ordinal.
         q,p = number(cells['quantity']['text']),number(cells['price']['text'])
         printed = number(cells['printed_total']['text']) if 'printed_total' in cells else None
@@ -1414,7 +1427,7 @@ def _process_route_body(data, profile, job_dir, rectify):
                            if vat_ok is False else None)
     map_path = job_dir/'rectification_map.npz'
     np.savez_compressed(map_path, map_x=rect.map_x, map_y=rect.map_y)
-    geometry['inverse_map'] = str(map_path.relative_to(ROOT)).replace('\\', '/')
+    geometry['inverse_map'] = display_path(map_path)
     problem_text = None
     try:
         from .ocr.text_debug import save_text_debug
@@ -1440,7 +1453,7 @@ def _process_route_body(data, profile, job_dir, rectify):
             if problem_digits['count']:
                 processing_log.extend(problem_digits.pop('log_entries',[]))
                 processing_log.append({'type':'debug', 'stage':'Проблемные цифры',
-                    'message':f"Фото проблемных цифровых ячеек: {problem_digits['count']}. Отчёт: {job_dir.relative_to(ROOT).as_posix()}/problem_digits/report.html"})
+                    'message':f"Фото проблемных цифровых ячеек: {problem_digits['count']}. Отчёт: {display_path(job_dir)}/problem_digits/report.html"})
             else:
                 problem_digits = None
         except Exception as exc:

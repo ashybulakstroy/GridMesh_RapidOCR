@@ -22,3 +22,17 @@ def positive_int(name, default):
     value = int(setting(name, str(default)))
     if value < 1: raise ValueError(f'{name}: требуется положительное целое')
     return value
+
+def output_directory():
+    """Allow project output and explicitly configured system temporary directories."""
+    path = (ROOT / setting('OUTPUT_DIR', 'data/output')).resolve()
+    allowed = [ROOT.resolve()]
+    allowed.extend(Path(value).resolve() for name in ('TEMP', 'TMP')
+                   if (value := os.environ.get(name)))
+    if not any(path.is_relative_to(base) for base in allowed):
+        raise ValueError('OUTPUT_DIR должен находиться внутри проекта, TEMP или TMP')
+    return path
+
+def display_path(path):
+    path = Path(path).resolve()
+    return (path.relative_to(ROOT.resolve()) if path.is_relative_to(ROOT.resolve()) else path).as_posix()

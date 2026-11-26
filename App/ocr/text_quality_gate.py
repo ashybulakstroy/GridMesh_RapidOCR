@@ -1,6 +1,7 @@
 """V3: review selected result only; VAT evidence controls verification, not classification."""
 import re
 from decimal import Decimal
+from .vat_marker_strict_v1 import vat_marker as _vat_marker_strict
 
 
 def enabled():
@@ -9,7 +10,7 @@ def enabled():
 
 
 def vat_marker(text):
-    return bool(re.match(r'^\s*(?:[нh][дd][сc]|vat)(?=\s|\d|%|$)', str(text), re.I))
+    return bool(_vat_marker_strict(text))
 
 
 def plan(cells, rows, parse, rate):

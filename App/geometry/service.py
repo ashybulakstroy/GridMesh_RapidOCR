@@ -255,6 +255,17 @@ def _build_grid_core(image, *, rectify=False, phase=None, pre_detected=None):
         raise ValueError('Не удалось уверенно найти печатную сетку таблицы. Загрузите другое фото.')
     if not 5 <= len(data['vertical']) <= 9 or len(data['horizontal']) < 3:
         raise ValueError('Не удалось определить границы столбцов товарной таблицы. Требуется проверка фото.')
+    # GRID_ANOMALY_V53_SAFE_EXTRA
+    from .grid_anomaly_v53 import enabled as _v53_enabled, prune_exterior
+    _v53_pruned=None
+    if _v53_enabled() and len(data['vertical'])==6:
+        _v53_start=perf_counter()
+        _v53_data,_v53_report=prune_exterior(image,data)
+        if _debug is not None:
+            _debug.add_geometry('v53_exterior_rail',(perf_counter()-_v53_start)*1000,_v53_report)
+        if _v53_report['accepted']:
+            data=_v53_data
+            _v53_pruned=_v53_report
     _repair_t0=perf_counter() if _debug is not None else None
     data, repaired_curves, unresolved_curves = _repair_extreme_horizontal_curves(image, data)
     if _debug is not None:
@@ -362,9 +373,22 @@ def _build_grid_core(image, *, rectify=False, phase=None, pre_detected=None):
             cv2.line(overlay, (round(result.xs[0]), round(y)), (round(result.xs[-1]), round(y)), (255, 100, 0), 2)
     if _debug is not None:
         _debug.add_geometry('safety_and_overlay',(perf_counter()-_overlay_t0)*1000)
+    if _v53_pruned is not None:
+        if (check.get('status')!='MEASURED' or check.get('folded_fraction',1)>0 or check.get('source_valid_fraction',0)<.995 or
+                check.get('valid_fraction',0)<.995 or unresolved_curves or len(result.xs)!=5):
+            raise ValueError('V53: pruned grid failed mesh safety')
+        # Independent LSD audit of the FINAL graph, after all legacy curve repairs.
+        from .grid_edge_validator_v12 import audit_rowaware_printed_rows
+        _v53_nodes=np.array([[intersection(v,h,image.shape) for v in vs] for h in hs],float)
+        _v53_pad=max(18,min(60,round(float(np.median(np.diff(_v53_nodes[:,:,1],axis=0)))*.5)))
+        _v53_bbox=[0,max(0,int(_v53_nodes[:,:,1].min())-_v53_pad),W,min(H,int(_v53_nodes[:,:,1].max())+_v53_pad)]
+        _v53_ok,_v53_audit=audit_rowaware_printed_rows(image,_v53_nodes,paper_bbox=_v53_bbox)
+        _v53_pruned['final_audit']=_v53_audit
+        if not _v53_ok:raise ValueError('V53: independent source row audit failed')
+        result.info['v53_require_strict_header']=True
     if _combo_diag is not None and (check.get('status')!='MEASURED' or check.get('folded_fraction',1)>0 or check.get('source_valid_fraction',0)<.995):
         raise ValueError('combo premesh: unsafe repaired mesh')
-    return _grid_diag.ret((result, overlay, {'combo_premesh':_combo_diag,'method': method, 'autogrid_vertical_count': auto_vertical_count,
+    return _grid_diag.ret((result, overlay, {'combo_premesh':_combo_diag,'extra_boundary_v53':_v53_pruned,'method': method, 'autogrid_vertical_count': auto_vertical_count,
                              'repaired_extreme_horizontal': repaired_curves,
                              'unresolved_extreme_horizontal': unresolved_curves,
                              'physical_detection_selection': report.get('selection'),

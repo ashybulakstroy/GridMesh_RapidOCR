@@ -72,6 +72,8 @@ def _coverage(mask, rule, a, b, H, W):
 def detect_short_grid(image, *, rule_factory=None):
     """Find a compact, complete 5-rail table (header + 1–2 body bands)."""
     started=perf_counter(); report={'status':'rejected','reason':'no_verified_short_grid'}
+    from .grid_anomaly_v53 import enabled as _v53_enabled
+    _compact_counts=(3,4,5) if _v53_enabled() else (3,4)
     if image is None or image.size==0:return None,report
     from .source_grid_v16 import _line_segments, _find_rails
     if rule_factory is None:
@@ -91,7 +93,7 @@ def detect_short_grid(image, *, rule_factory=None):
     broad=_levels(hm,0,W,0,H)
     broad=sorted(sorted(broad,key=lambda p:-p[1])[:32]);
     for i in range(len(broad)):
-        for count in (3,4):
+        for count in _compact_counts:
             if i+count>len(broad):continue
             a,b=broad[i][0],broad[i+count-1][0]; height=b-a
             if height<max(28,H*.025) or height>H*.43:continue
@@ -138,7 +140,7 @@ def detect_short_grid(image, *, rule_factory=None):
             traced.append((rule_factory('h',coeff,yy,float(valid.mean()),(lx,rx)),cols))
         traced.sort(key=lambda p:p[0].position)
         # Reject long/partial grids; never choose an arbitrary subset of a long table.
-        if len(traced) not in (3,4):continue
+        if len(traced) not in _compact_counts:continue
         hs=[p[0] for p in traced]; y0,y1=hs[0].position,hs[-1].position
         if y1-y0>H*.43 or min(np.diff([h.position for h in hs]))<10:continue
         # Refit each rail from observed segments within the verified table range.
@@ -182,7 +184,10 @@ def validate_short_graph(image, graph):
     from .geometry_lab.algorithms import intersection
     from .grid_edge_validator_v12 import audit_rowaware_printed_rows
     H,W=image.shape[:2]; vs=graph['vertical'];hs=graph['horizontal']
-    if len(vs)!=5 or len(hs) not in (3,4):return False,{'reason':'not_short_five_rail'}
+    # GRID_ANOMALY_V53_SAFE_EXTRA
+    from .grid_anomaly_v53 import enabled as _v53_enabled
+    _allowed=(3,4,5) if _v53_enabled() else (3,4)
+    if len(vs)!=5 or len(hs) not in _allowed:return False,{'reason':'not_short_five_rail'}
     nodes=np.asarray([[intersection(v,h,image.shape) for v in vs] for h in hs])
     if (not np.isfinite(nodes).all() or nodes[:,:,0].min()<0 or nodes[:,:,0].max()>=W or
         nodes[:,:,1].min()<0 or nodes[:,:,1].max()>=H or np.min(np.diff(nodes[:,:,0],axis=1))<10 or
@@ -213,6 +218,9 @@ def rescue(image, *, rectify, phase, header_validator, build_core, physical_dete
     graph,diagnostic=detect_short_grid(image)
     candidates=[]
     if graph is not None:candidates.append((graph,diagnostic))
+    from .grid_anomaly_v53 import enabled as _v53_enabled, multiscale_only
+    _v53_on=_v53_enabled()
+    _allowed=(3,4,5) if _v53_on else (3,4)
     def attempt(graph,diagnostic):
         ok,audit=validate_short_graph(image,graph)
         if not ok:return None
@@ -221,10 +229,12 @@ def rescue(image, *, rectify, phase, header_validator, build_core, physical_dete
         safe=geometry.get('safety') or {}
         if (safe.get('status')!='MEASURED' or safe.get('folded_fraction',1)>0 or
                 safe.get('source_valid_fraction',0)<.995 or geometry.get('unresolved_extreme_horizontal',0)>0 or
-                len(result.xs)!=5 or len(result.ys) not in (3,4)):return None
+                len(result.xs)!=5 or len(result.ys) not in _allowed):return None
         final_graph=result.info.get('source_grid')
         if final_graph is None:return None
         final_ok,final_audit=validate_short_graph(image,final_graph)
+        if _v53_on and (len(result.ys)==5 or diagnostic.get('selection')=='v53_multiscale_first_short_rescue'):
+            result.info['v53_require_strict_header']=True
         if not final_ok or not header_validator(result):return None
         geometry['method']='Short Receipt Grid Recovery V1'
         from .paper_first_grid_v12 import json_native
@@ -235,6 +245,17 @@ def rescue(image, *, rectify, phase, header_validator, build_core, physical_dete
             result=attempt(g,d)
             if result is not None:return result
         except (ValueError,cv2.error,TypeError,IndexError,KeyError,AttributeError):pass
+    # Independent MultiScale first on the already-established short rescue route.
+    # No routing-state mutation, no V2 bypass unless all existing guards pass.
+    if _v53_on:
+        try:
+            g,d=multiscale_only(image)
+            if g is not None:
+                result=attempt(g,{'selection':'v53_multiscale_first_short_rescue','detector':d})
+                if result is not None:return result
+        except Exception as exc:
+            from App import grid_abort_diagnostics_v1 as _v53_diag
+            _v53_diag.caught(locals(), 'short_receipt_grid_v1:v53_multiscale_only')
     # Physical graph fallback, only after the compact detector fails and only
     # if the same short-grid evidence, safety and OCR-header guards pass.
     try:
