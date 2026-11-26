@@ -1,4 +1,6 @@
 """Receipt processing: detected physical grid defines every OCR cell."""
+# GRID_ABORT_DIAGNOSTICS_V1
+from App import grid_abort_diagnostics_v1 as _grid_diag
 import base64
 import re
 import time
@@ -199,6 +201,7 @@ def process(data, publish=None, job_id=None, *, rectify=False):
         deactivate(token)
 
 
+@_grid_diag.job
 def _process_job(data, publish=None, job_id=None, *, rectify=False, rec_tracker):
     if job_id is None:
         job_id = uuid.uuid4().hex
@@ -208,6 +211,7 @@ def _process_job(data, publish=None, job_id=None, *, rectify=False, rec_tracker)
     if not output_dir.is_relative_to(ROOT): raise ValueError('OUTPUT_DIR должен быть внутри проекта')
     job_dir = output_dir / job_id
     job_dir.mkdir(parents=True, exist_ok=False)
+    _grid_diag.bind(job_dir)
     profile = OCRPerformance(publish)
     bind_profile(profile, job_id)
     profile.processing_log = []
@@ -300,6 +304,7 @@ def _process_job(data, publish=None, job_id=None, *, rectify=False, rec_tracker)
 
 
 # ADAPTIVE_DETECTOR_ROUTING_V1
+@_grid_diag.observe('App/pipeline.py:_process')
 def _process(data, profile, job_dir, rectify):
     from .geometry import detector_routing_v1 as _route
     _mode=setting('OCR_GRID_ROUTE_V1','auto')
@@ -311,6 +316,7 @@ def _process(data, profile, job_dir, rectify):
         try:
             result=_process_route_body(data,profile,job_dir,rectify)
         except (ValueError,cv2.error) as exc:
+            _grid_diag.caught(locals(), 'App/pipeline.py:_process:L313')
             if not _route.can_retry(): raise
             _route.record('legacy_retry',reason=str(exc))
             _retry=str(exc)
@@ -322,16 +328,18 @@ def _process(data, profile, job_dir, rectify):
             _state.mode='legacy'; _state.candidate_used=False
             result=_process_route_body(data,profile,job_dir,rectify)
         result.setdefault('geometry',{})['detector_routing_v1']={'requested_mode':_mode,'final_mode':_state.mode,'events':_state.events,'legacy_retry':_retry}
-        return result
+        return _grid_diag.ret((result), locals(), 'App/pipeline.py:_process:L325')
     finally:
         try:
             (job_dir/'detector_routing.json').write_text(__import__('json').dumps({'requested_mode':_mode,'final_mode':_state.mode,'events':_state.events,'legacy_retry':_retry},ensure_ascii=False,indent=2),encoding='utf-8')
         except OSError:
+            _grid_diag.caught(locals(), 'App/pipeline.py:_process:L329')
             pass  # diagnostic persistence must not mask original exception
         finally:
             _route.end(_token)
 
 
+@_grid_diag.observe('App/pipeline.py:_process_route_body')
 def _process_route_body(data, profile, job_dir, rectify):
     started = time.perf_counter()
     e4_enabled = setting('OCR_E4_ENABLE','1') == '1'
@@ -350,6 +358,9 @@ def _process_route_body(data, profile, job_dir, rectify):
     debug_perf=get_debug()
     if debug_perf is not None:
         debug_perf.capture_runtime(image.shape)
+    if setting('OCR_LIVE_TOTAL_RING_V1','0') == '1':
+        profile.publish({'live_total_ring_enabled':True})
+    _grid_diag.begin()
     profile.phase('Поиск физической сетки')
     # Portrait photos are the supported automatic orientation. Landscape is
     # tested in both directions using the same physical-grid detector.
@@ -364,17 +375,18 @@ def _process_route_body(data, profile, job_dir, rectify):
             # printed header for each candidate before promoting its grid.
             def _v12_validate_header(_candidate):
                 if len(_candidate.xs) != 5:
-                    return False
+                    return _grid_diag.ret((False), locals(), 'App/pipeline.py:_process_route_body:_v12_validate_header:L367')
                 _texts=[]
                 for _col in (1,2,3):
                     _crop,_off,_=cell_crop(_candidate,0,_col)
                     _texts.append(read_cell(_crop,0,'header',_off)['text'].casefold())
                 _header=' '.join(_texts).translate(str.maketrans({'ғ':'г','ң':'н','қ':'к'}))
-                return (bool(re.search(r'тауар|атау|наимен|назван',_header)) and
-                        bool(re.search(r'саны|кол.?во|колич|бага|бағ|цена',_header)))
+                return (_grid_diag.ret((bool(re.search(r'тауар|атау|наимен|назван',_header)) and
+                        bool(re.search(r'саны|кол.?во|колич|бага|бағ|цена',_header))), locals(), 'App/pipeline.py:_process_route_body:_v12_validate_header:L373'))
             try:
                 rect, overlay, geometry = build_grid(oriented, rectify=rectify, phase=profile.phase)
             except (ValueError, cv2.error):
+                _grid_diag.caught(locals(), 'App/pipeline.py:_process_route_body:L377')
                 from .geometry.service import build_grid_paper_rescue
                 _rescue = build_grid_paper_rescue(oriented, rectify=rectify,
                                                   phase=profile.phase, header_validator=_v12_validate_header)
@@ -407,6 +419,7 @@ def _process_route_body(data, profile, job_dir, rectify):
             confidence = sum(line['confidence'] for line in header)/max(1,len(header))
             options.append((known + confidence*.1, oriented, rect, overlay, geometry))
         except Exception as exc:
+            _grid_diag.caught(locals(), 'App/pipeline.py:_process_route_body:L409')
             failures.append(str(exc))
     if not options:
         from .geometry.service import build_grid_source_rescue
@@ -420,6 +433,19 @@ def _process_route_body(data, profile, job_dir, rectify):
     score, image, rect, overlay, geometry = max(options, key=lambda item: item[0])
     # PAPER_FIRST_FULLGRID_V16: reject an anomalously tall first band before
     # numerical OCR starts. V4 runs at its normal speed on ordinary receipts.
+    # SHORT_RECEIPT_GRID_RECOVERY_V1: suspicious first band also on 3/4 boundaries.
+    if (setting('OCR_SHORT_RECEIPT_GRID_V1','1') == '1' and
+            setting('OCR_SOURCE_GRID_V16','1') == '1' and 3 <= len(rect.ys) < 5):
+        _short_bands = np.diff(np.asarray(rect.ys,dtype=float))
+        if _short_bands[0] > max(90.,3.0*float(np.median(_short_bands[1:]))) and not _v12_validate_header(rect):
+            from .geometry.service import build_grid_source_rescue
+            _short_fixed=build_grid_source_rescue(image,rectify=rectify,phase=profile.phase,
+                                                   header_validator=_v12_validate_header)
+            if _short_fixed is None:
+                raise ValueError('ShortReceipt V1: первая полоса не является подтверждённой шапкой')
+            rect,overlay,geometry=_short_fixed
+            processing_log.append({'type':'operation','stage':'Short Receipt Grid Recovery V1',
+                'message':'Восстановлена короткая товарная таблица после проверки шапки.'})
     if setting('OCR_SOURCE_GRID_V16','1') == '1' and len(rect.ys)>=5:
         _bands=np.diff(np.asarray(rect.ys,dtype=float))
         _typical=float(np.median(_bands[1:])) if len(_bands)>2 else 0.
@@ -463,7 +489,7 @@ def _process_route_body(data, profile, job_dir, rectify):
                 numeric=bool(re.search(r'саны|кол.?во|колич|бага|бағ|цена',header))
                 if not (names and numeric):
                     raise ValueError('V12: верхняя строка не подтверждена как заголовок: '+header)
-            return {'number':0,'name':1,'quantity':2,'price':3}
+            return _grid_diag.ret(({'number':0,'name':1,'quantity':2,'price':3}), locals(), 'App/pipeline.py:_process_route_body:_v12_read_columns:L466')
         profile.phase('Определяем столбцы по заголовку')
         seen={}; texts=[]
         for k in range(len(grid.xs)-1):
@@ -482,10 +508,11 @@ def _process_route_body(data, profile, job_dir, rectify):
             seen[role]=k
         if {'number','name','quantity','price'}-seen.keys():
             raise ValueError('Не определены заголовки: '+', '.join(texts))
-        return seen
+        return _grid_diag.ret((seen), locals(), 'App/pipeline.py:_process_route_body:_v12_read_columns:L485')
     try:
         columns=_v12_read_columns(rect, rescued=bool(geometry.get('paper_first_v12')))
     except ValueError as _v12_error:
+        _grid_diag.caught(locals(), 'App/pipeline.py:_process_route_body:L488')
         from .geometry.service import build_grid_paper_rescue
         _v12_rescue=build_grid_paper_rescue(image,rectify=rectify,
                                          phase=profile.phase,header_validator=_v12_validate_header)
@@ -529,8 +556,28 @@ def _process_route_body(data, profile, job_dir, rectify):
                 _direct = build_direct(image,rect,geometry,_grid_gate['source_extension'],rectify=rectify)
                 if not _v12_validate_header(_direct[0]):
                     raise ValueError('direct_header_not_confirmed')
-                return _direct
-            for _grid_route,_grid_builder in (('direct_anchor_v3',_grid_direct_builder),
+                return _grid_diag.ret((_direct), locals(), 'App/pipeline.py:_process_route_body:_grid_direct_builder:L532')
+            # GRID_ANOMALY_V52_UNIVERSAL
+            from .geometry.grid_anomaly_v52 import enabled as _v52_enabled, build_candidate as _v52_build
+            def _v52_builder(*args, **kwargs):
+                try:
+                    _new=_v52_build(image,rect,geometry,_grid_gate['source_extension'],rectify=rectify)
+                except (TypeError,IndexError,KeyError,AttributeError,OverflowError) as exc:
+                    raise ValueError('v52_recovery_error: '+str(exc)) from exc
+                if _new is not None and not _v12_validate_header(_new[0]):
+                    raise ValueError('v52_header_not_confirmed')
+                return _new
+            def _v52_multiscale_builder(*args, **kwargs):
+                try:
+                    _new=_v52_build(image,rect,geometry,_grid_gate['source_extension'],rectify=rectify,multiscale=True)
+                except (TypeError,IndexError,KeyError,AttributeError,OverflowError) as exc:
+                    raise ValueError('v52_multiscale_error: '+str(exc)) from exc
+                if _new is not None and not _v12_validate_header(_new[0]):
+                    raise ValueError('v52_multiscale_header_not_confirmed')
+                return _new
+            _v52_first=(('universal_v52',_v52_builder),) if _v52_enabled() else ()
+            _v52_second=(('autogrid_multiscale_v52',_v52_multiscale_builder),) if _v52_enabled() and 'AutoGrid' in geometry.get('method','') and 'Physical Grid Graph' not in geometry.get('method','') else ()
+            for _grid_route,_grid_builder in (('direct_anchor_v3',_grid_direct_builder),*_v52_first,*_v52_second,
                                                ('source_v16',build_grid_source_rescue),
                                                ('paper_v12',build_grid_paper_rescue)):
                 _grid_attempt = {'route':_grid_route}
@@ -539,6 +586,7 @@ def _process_route_body(data, profile, job_dir, rectify):
                     _grid_candidate = _grid_builder(image,rectify=rectify,phase=profile.phase,
                                                      header_validator=_v12_validate_header)
                 except (ValueError,cv2.error,TypeError,IndexError) as _ge:
+                    _grid_diag.caught(locals(), 'App/pipeline.py:_process_route_body:L541')
                     _grid_attempt.update(status='rejected',error=str(_ge))
                     continue
                 if _grid_candidate is None:
@@ -551,10 +599,13 @@ def _process_route_body(data, profile, job_dir, rectify):
                     _ga = audit_grid(image,_gr,_gg,crop=cell_crop,read=read_line,
                                      number_col=_gc.get('number'),force_number=True)
                 except (ValueError,cv2.error) as _ge:
+                    _grid_diag.caught(locals(), 'App/pipeline.py:_process_route_body:L553')
                     _grid_attempt.update(status='rejected',error=str(_ge))
                     _grid_save()
                     continue
                 _grid_attempt['audit']=_ga
+                if _gg.get('v52_recovery'):
+                    _grid_attempt['v52_recovery']=_gg['v52_recovery']
                 if _gg.get('direct_anchor_v3'):
                     _grid_attempt['direct_recovery'] = _gg['direct_anchor_v3']
                 if _ga['status']!='pass':
@@ -598,6 +649,7 @@ def _process_route_body(data, profile, job_dir, rectify):
         if _final_trace.get('status')!='recovered' and not _v12_validate_header(rect):
             raise ValueError('routing: printed header not confirmed')
         _route.record('candidate_confirmed',status=_final_trace.get('status'))
+    _grid_diag.complete()
     _route.finish_geometry()
     (job_dir/'rectified.png').write_bytes(cv2.imencode('.png',overlay)[1].tobytes())
     profile.publish({'preview_ready':True,'rectification':geometry['rectification']})
@@ -626,6 +678,13 @@ def _process_route_body(data, profile, job_dir, rectify):
             if field in ('quantity','price','printed_total'):
                 crop_map[(idx,field)] = crop
     from .ocr.engine import _TEXT_LAST_ROW
+    # LIVE_TOTAL_RING_V1
+    from .ocr import live_total_ring as _ltr
+    from .ocr import live_receipt as _live_receipt
+    _ltr_session, _ltr_token = _ltr.activate(profile.publish, body_row_count,
+        setting('OCR_LIVE_TOTAL_RING_V1','0') == '1')
+    _live_session, _live_token = _live_receipt.activate(profile.publish,
+        setting('OCR_LIVE_RECEIPT','1') == '1')
     text_last_token = _TEXT_LAST_ROW.set(body_row_count)
     try:
         parallel_footer = None
@@ -636,6 +695,8 @@ def _process_route_body(data, profile, job_dir, rectify):
             def read_footer_and_candidates():
                 footer_start = time.perf_counter()
                 footer_result = read_printed_footer(image, table_source_bottom(rect,xs,ys), footer_guide=footer_focus_guide)
+                if footer_result.get('total') is not None:
+                    profile.publish({'live_receipt_footer':str(footer_result['total'])})
                 footer_result['footer_read_ms'] = round((time.perf_counter()-footer_start)*1000,3)
                 if e4_enabled and not adaptive_enabled and setting('OCR_E4_FAST_GATE','1') != '1':
                     candidate_start = time.perf_counter()
@@ -652,6 +713,9 @@ def _process_route_body(data, profile, job_dir, rectify):
             batch_stats['table_wall_ms'] = round((time.perf_counter()-table_started)*1000,3)
     finally:
         _TEXT_LAST_ROW.reset(text_last_token)
+        _live_receipt.flush(_live_session)
+        _live_receipt.deactivate(_live_token)
+        _ltr.deactivate(_ltr_token)
     geometry['ocr_mode'] = ocr_mode
     geometry['ocr_batch'] = batch_stats
     if ocr_mode == 'batch' and debug_perf is not None:
@@ -689,6 +753,7 @@ def _process_route_body(data, profile, job_dir, rectify):
                         with rec_scope([(idx,'name')], 'vat_name_gate_retry'):
                             alternate = tqg.verify(candidate, cells['name'], read_cell, read_full)
                     except Exception as exc:
+                        _grid_diag.caught(locals(), 'App/pipeline.py:_process_route_body:L691')
                         alternate = None
                         processing_log.append({'type':'error','stage':'VAT gate','message':str(exc)})
                     if alternate and tqg.vat_marker(alternate['text']):
@@ -732,6 +797,7 @@ def _process_route_body(data, profile, job_dir, rectify):
         for row in rows for field in ('quantity','price','printed_total')
         if field in row['cells']
     }
+    _ltr.sync(_ltr_session, rows)
     profile.phase('OCR P1: выборочное восстановление чисел')
     retry_budget = positive_int('OCR_P1_MAX_RETRIES', 4)
     initial_recovery = ({'attempted':0,'changed':[],'candidates':[],
@@ -780,6 +846,7 @@ def _process_route_body(data, profile, job_dir, rectify):
     total, footer_lines, footer_attempts = (footer_result['total'],
         footer_result['lines'], footer_result['attempts'])
     # Only investigate footer mismatch AFTER normal OCR; never invent numbers.
+    _ltr.sync(_ltr_session, rows)
     profile.phase('OCR P1: проверка напечатанного итога')
     expected_total = number(total)
     missing_total = expected_total is None
@@ -829,6 +896,7 @@ def _process_route_body(data, profile, job_dir, rectify):
             log_budget_events(processing_log, expanded_recovery['batch'], 'Повтор с удвоенным бюджетом')
             log_retry_details(processing_log, expanded_recovery, 'Повтор с удвоенным бюджетом')
         except Exception as exc:
+            _grid_diag.caught(locals(), 'App/pipeline.py:_process_route_body:L831')
             processing_log.append({'type':'error', 'stage':'Повтор с удвоенным бюджетом',
                                    'message':f'Повтор не выполнен: {type(exc).__name__}: {exc}'})
         profile.phase('OCR P1: дополнительная проверка итога')
@@ -840,12 +908,39 @@ def _process_route_body(data, profile, job_dir, rectify):
                            max_retries=max(0,retry_budget-initial_recovery['attempted'])))
     geometry['ocr_recovery']['footer'] = footer_recovery
     log_retry_details(processing_log, footer_recovery, 'Дополнительная проверка итога')
+    _ltr.sync(_ltr_session, rows)
     profile.phase('E5: проверка проблемных цифр Tesseract')
+    fractional_price_keys = []
+    for row in rows:
+        cell = row.get('cells', {}).get('price', {})
+        value = number(cell.get('text'))
+        if (value is not None and value.is_finite() and value != value.to_integral_value()
+                and not cell.get('user_verified')):
+            fractional_price_keys.append((row['row_id'], 'price'))
+            processing_log.append({'type':'check', 'stage':'Проверка дробной цены',
+                'row_id':row['row_id'], 'column_id':'price', 'text':cell.get('text'),
+                'message':f'Строка {row["row_id"]}: цена «{cell.get("text")}» дробная; '
+                          'ожидается целое число, выполняется повторное распознавание.'})
+    if fractional_price_keys:
+        geometry['fractional_price_check'] = {'rows':[key[0] for key in fractional_price_keys]}
     try:
+        fractional_e5 = (recover_with_tesseract(
+            rows, crop_map, {}, accept_invalid=False, force_keys=fractional_price_keys,
+            integer_price_keys=fractional_price_keys, max_cells=len(fractional_price_keys))
+            if fractional_price_keys else {'status':'not_needed','details':[],'candidates':[]})
         # E5_TESSERACT_SEQUENTIAL_V1: independently observed total, not computed total.
         e5_result = recover_with_tesseract(rows, crop_map, geometry['ocr_recovery'],
-            printed_total=total, footer_attempts=footer_attempts, vat_rate=vat_rate)
+            printed_total=total, footer_attempts=footer_attempts, vat_rate=vat_rate,
+            exclude_keys=fractional_price_keys)
+        e5_result['details'] = fractional_e5['details'] + e5_result['details']
+        e5_result['candidates'] = fractional_e5['candidates'] + e5_result['candidates']
+        if fractional_e5['status'] in ('error', 'unavailable'):
+            e5_result['status'] = fractional_e5['status']
+            e5_result['error'] = fractional_e5.get('error')
+        elif fractional_e5['details'] and e5_result['status'] == 'not_needed':
+            e5_result['status'] = 'completed'
     except Exception as exc:
+        _grid_diag.caught(locals(), 'App/pipeline.py:_process_route_body:L848')
         e5_result = {'status':'error', 'details':[], 'candidates':[],
                      'error':f'{type(exc).__name__}: {exc}'}
     geometry['e5_tesseract'] = e5_result
@@ -879,6 +974,9 @@ def _process_route_body(data, profile, job_dir, rectify):
             audit_sum = sum((Decimal(r['line_total']) for r in rows if r['line_total'] is not None), Decimal(0))
             book = CandidateBook.from_receipt(rows, primary_numeric_observations,
                                              geometry['ocr_recovery'], total, footer_attempts)
+            for candidate in e5_result['candidates']:
+                book.add(candidate['row_id'], candidate['field'], candidate['text'], None,
+                         'e5_'+candidate['variant'], model='tesseract_kaz')
             # MULTILINE_VAT_FAST_E4_V1: cheap proof of internal consistency first.
             # Arithmetic is never used to CREATE OCR candidates.
             gate = primary_consistency(rows, total, footer_attempts,
@@ -886,7 +984,7 @@ def _process_route_body(data, profile, job_dir, rectify):
                 min_footer_conf=float(setting('OCR_E4_GATE_MIN_FOOTER_CONF','0.86')))
             fast_matrix = None
             skip_secondary = False
-            if gate['eligible'] and setting('OCR_E4_FAST_GATE','1') == '1':
+            if gate['eligible'] and not fractional_price_keys and setting('OCR_E4_FAST_GATE','1') == '1':
                 seed_printed_vat(rows, book)
                 fast_matrix = solve_matrix(rows, book, vat_rate,
                     max_nodes=positive_int('OCR_MATRIX_MAX_NODES',100000))
@@ -952,6 +1050,7 @@ def _process_route_body(data, profile, job_dir, rectify):
                         first_matrix_status=early_scan['last_matrix_status'],
                         adaptive_collect_ms=early_scan['elapsed_ms'])
                 except Exception as exc:
+                    _grid_diag.caught(locals(), 'App/pipeline.py:_process_route_body:L954')
                     adaptive_info['error'] = f'{type(exc).__name__}: {exc}'
                     report_issue(source='E4_adaptive',operation='early_collect',
                                  kind='early_exception',error=exc,fallback='full_e4')
@@ -1031,6 +1130,7 @@ def _process_route_body(data, profile, job_dir, rectify):
                             force_keys=[(x['row_id'],x['field']) for x in fast_targets],
                             max_cells=len(fast_targets))
                     except Exception as exc:
+                        _grid_diag.caught(locals(), 'App/pipeline.py:_process_route_body:L1033')
                         fast_e5 = {'status':'error', 'details':[], 'candidates':[],
                                    'error':f'{type(exc).__name__}: {exc}'}
                     fast_e5['wall_ms'] = round((time.perf_counter()-_fast_e5_started)*1000,3)
@@ -1125,6 +1225,7 @@ def _process_route_body(data, profile, job_dir, rectify):
                     rows, crop_map, {}, book=book, exclude_keys=e5_seen,
                     max_cells=max(0, 3-len(e5_seen)), accept_invalid=False)
             except Exception as exc:
+                _grid_diag.caught(locals(), 'App/pipeline.py:_process_route_body:L1127')
                 late_e5 = {'status':'error', 'details':[], 'candidates':[],
                            'error':f'{type(exc).__name__}: {exc}'}
             geometry['e5_tesseract']['after_e4'] = late_e5
@@ -1155,8 +1256,9 @@ def _process_route_body(data, profile, job_dir, rectify):
                     or printed_vat_observed)
             # PARTIAL_DIGIT_MATRIX_TRIAL_V1: shadow only, no changes to ordinary E4.
             if (setting('OCR_PARTIAL_DIGIT_TRIAL','1') == '1' and
-                    numeric_matrix.get('status') in ('no_solution','insufficient_candidates') and
-                    not numeric_matrix.get('search_truncated')):
+                    (numeric_matrix.get('status') in ('no_solution','insufficient_candidates') or
+                     (fractional_price_keys and (numeric_matrix.get('status') == 'ambiguous' or
+                                                  numeric_matrix.get('search_truncated'))))):
                 try:
                     from .ocr.partial_digit_lab.partial_digit_trial import trial as _partial_trial, METHODS, EXTENDED
                     _partial_result = _partial_trial(rows, crop_map, book, vat_rate,
@@ -1171,6 +1273,7 @@ def _process_route_body(data, profile, job_dir, rectify):
                                   '; решения: '+str(len(_partial_result.get('matrix',{}).get('solutions',[])))+
                                   '; требуется проверка.', 'status':_partial_result['status']})
                 except Exception as _partial_exc:
+                    _grid_diag.caught(locals(), 'App/pipeline.py:_process_route_body:L1173')
                     geometry['partial_digit_trial'] = {'status':'error','review_only':True,
                         'error':f'{type(_partial_exc).__name__}: {_partial_exc}'}
             numeric_auto_corrections = auto_apply_consensus(
@@ -1251,6 +1354,7 @@ def _process_route_body(data, profile, job_dir, rectify):
                           f"вариантов НДС {len(numeric_matrix['vat_variants'])}, "
                           f"матрица {numeric_matrix['status']}."})
         except Exception as exc:
+            _grid_diag.caught(locals(), 'App/pipeline.py:_process_route_body:L1253')
             numeric_matrix={'status':'experiment_error','review_required':True,
                             'error':f'{type(exc).__name__}: {exc}'}
             geometry['numeric_experiment']={'status':'experiment_error'}
@@ -1265,6 +1369,16 @@ def _process_route_body(data, profile, job_dir, rectify):
     for row in rows:
         for col in ('quantity','price'):
             value = row['cells'][col]['text']
+            parsed_value = number(value)
+            if (col == 'price' and parsed_value is not None and parsed_value.is_finite()
+                    and parsed_value != parsed_value.to_integral_value()
+                    and not row['cells'][col].get('user_verified')):
+                reason = 'Дробная цена: ожидается целое число; проверьте изображение.'
+                row['cells'][col]['numeric_issue'] = reason
+                numeric_issues.append({'row_id':row['row_id'], 'column_id':col,
+                                       'text':str(value), 'reason':reason})
+                geometry['warnings'].append(f'Строка {row["row_id"]}: дробная цена «{value}», проверьте цифры.')
+                numeric_matrix['review_required'] = True
             if number(value) is None:
                 issue = {'row_id':row['row_id'], 'column_id':col, 'text':str(value),
                          'reason':'Число не распознано в безопасном формате; исходный текст сохранён.'}
@@ -1274,6 +1388,7 @@ def _process_route_body(data, profile, job_dir, rectify):
                 shown = str(value) if str(value).strip() else 'пустое значение'
                 geometry['warnings'].append(f'Строка {row["row_id"]}: {label} «{shown}» не удалось надёжно распознать; число не рассчитано.')
     ocr_s = time.perf_counter() - ocr_start
+    _ltr.sync(_ltr_session, rows)
     profile.phase('Сборка и проверка электронного чека')
     computed = sum((Decimal(r['line_total']) for r in rows if r['line_total'] is not None), Decimal(0))
     incomplete = any(r['line_total'] is None for r in rows)
@@ -1309,6 +1424,7 @@ def _process_route_body(data, profile, job_dir, rectify):
         if problem_text:
             processing_log.append({'type':'debug','stage':'Проблемный текст','message':f"Текст: {problem_text['suspects']} подозрительных ячеек; отчёт problem_text/report.html"})
     except Exception as exc:
+        _grid_diag.caught(locals(), 'App/pipeline.py:_process_route_body:L1311')
         processing_log.append({'type':'error','stage':'Проблемный текст','message':f'{type(exc).__name__}: {exc}'})
     problem_digits = None
     if debug_perf is not None:
@@ -1328,9 +1444,10 @@ def _process_route_body(data, profile, job_dir, rectify):
             else:
                 problem_digits = None
         except Exception as exc:
+            _grid_diag.caught(locals(), 'App/pipeline.py:_process_route_body:L1330')
             processing_log.append({'type':'error','stage':'Проблемные цифры',
                 'message':f'Не удалось сохранить фото цифровых ячеек: {type(exc).__name__}: {exc}'})
-    return {'status': 'review' if geometry['warnings'] else 'ok', 'geometry': geometry,
+    return _grid_diag.ret(({'status': 'review' if geometry['warnings'] else 'ok', 'geometry': geometry,
             'problem_digits': problem_digits,
             'problem_text': problem_text,
             'processing_log': processing_log,
@@ -1354,7 +1471,7 @@ def _process_route_body(data, profile, job_dir, rectify):
                     'rate_percent': str(vat_rate), 'amount': str(vat_sum) if taxes else None},
             'footer_ocr': footer_lines, 'footer_ocr_attempts': footer_attempts,
             'footer_focus': footer_result.get('footer_focus'), 'timings': {'geometry_s': round(geo_s, 3),
-            'ocr_s': round(ocr_s, 3), 'total_s': round(time.perf_counter()-started, 3)}}
+            'ocr_s': round(ocr_s, 3), 'total_s': round(time.perf_counter()-started, 3)}}), locals(), 'App/pipeline.py:_process_route_body:L1333')
 
 
 def read_printed_footer(image, y_bottom, rows=(), *, footer_guide=None):

@@ -3,6 +3,8 @@
 Image-only experimental detector. Frozen V2 remains a conservative fallback.
 No OCR, reference coordinates, receipt ID, or expected row count is accepted.
 """
+# GRID_ABORT_DIAGNOSTICS_V1
+from App import grid_abort_diagnostics_v1 as _grid_diag
 from App.ocr.performance_deep.live_capture import timed as _deep_timed
 import cv2,numpy as np
 from itertools import combinations
@@ -16,6 +18,7 @@ from .structure_diagnostics import PolylineRule
 from .algorithms import intersection
 
 
+@_grid_diag.observe('App/geometry/geometry_lab/physical_grid_graph_v3.py:multiscale_segments')
 @_deep_timed("grid", "App/geometry/geometry_lab/physical_grid_graph_v3.py:multiscale_segments")
 def multiscale_segments(gray, *, scales=(1.,1.5)):
     H,W=gray.shape;parts={'h':[],'v':[]}; debug=get_debug()
@@ -54,7 +57,7 @@ def multiscale_segments(gray, *, scales=(1.,1.5)):
             debug.add_geometry('physical_v3_scale_classify',(perf_counter()-started)*1000,
                                {'scale':scale,'horizontal':len(parts['h'])-before_h,
                                 'vertical':len(parts['v'])-before_v})
-    return parts
+    return _grid_diag.ret((parts), locals(), 'App/geometry/geometry_lab/physical_grid_graph_v3.py:multiscale_segments:L57')
 
 
 @_deep_timed("grid", "App/geometry/geometry_lab/physical_grid_graph_v3.py:fit_segments")
@@ -170,8 +173,9 @@ def _complete_short_grid(data, report):
     return True
 
 
+@_grid_diag.observe('App/geometry/geometry_lab/physical_grid_graph_v3.py:detect_physical_graph')
 @_deep_timed("grid", "App/geometry/geometry_lab/physical_grid_graph_v3.py:detect_physical_graph")
-def detect_physical_graph(image, *, prefer_multiscale=False, min_rows=0):
+def detect_physical_graph(image, *, prefer_multiscale=False, min_rows=0, automatic=None):
     debug=get_debug(); started=perf_counter() if debug else None
     gray=cv2.cvtColor(image,cv2.COLOR_BGR2GRAY);H,W=gray.shape
     if debug:
@@ -190,13 +194,44 @@ def detect_physical_graph(image, *, prefer_multiscale=False, min_rows=0):
         _candidate,_trial_report=_multiscale_core(gray,response,dark,None,{'status':'NOT_RUN'})
         _trial=(_candidate,_trial_report)
         _accepted=_route.accept_candidate(_candidate,min_rows)
+        # GRID_ANOMALY_V5_BIDIRECTIONAL: prove missing edges before relaxing row census.
+        from ...config import setting as _v5_setting
+        if (not _accepted and _candidate is not None and _v5_setting('OCR_GRID_ROUTE_TWO_RAILS_V2','0')=='1' and
+                _v5_setting('OCR_GRID_ANOMALY_V5','0')=='1' and _route.accept_candidate(_candidate,3)):
+            try:
+                from ..grid_anomaly_v5 import recover as _recover_v5
+                _v5_fixed,_v5_diag=_recover_v5(image,_candidate,Rule)
+                if _route.accept_candidate(_v5_fixed,min_rows):
+                    _candidate={**_v5_fixed, 'v51_recovery_proven':True} if _v5_setting('OCR_GRID_ANOMALY_V51_CURVES','0')=='1' else _v5_fixed
+                    _trial_report={**_trial_report,'v5_route_repair':_v5_diag}
+                    _accepted=True
+                    _route.record('v5_route_repair',accepted=True,added=_v5_diag['added_rows'])
+                else:
+                    _route.record('v5_route_repair',accepted=False,reason='still_below_min_rows_or_crossing')
+            except (ValueError,TypeError,IndexError,KeyError,cv2.error,OverflowError) as _v5_exc:
+                _route.record('v5_route_repair',accepted=False,reason=str(_v5_exc))
+        # GRID_ANOMALY_V51_FULL_COMPLETENESS: use actual AutoGrid rule hints before V2.
+        if (not _accepted and automatic is not None and _candidate is not None and
+                _v5_setting('OCR_GRID_ANOMALY_V5','0')=='1' and
+                _v5_setting('OCR_GRID_ANOMALY_V51_INTERNAL','0')=='1' and _route.accept_candidate(_candidate,3)):
+            try:
+                from ..grid_anomaly_v51 import recover_full as _recover_v51
+                _fixed51,_diag51=_recover_v51(image,_candidate,automatic,Rule)
+                _ok51=_route.accept_candidate(_fixed51,min_rows)
+                _route.record('v51_full_recovery',accepted=_ok51,details=_diag51)
+                if _ok51:
+                    _candidate=_fixed51
+                    _trial_report={**_trial_report,'v51_recovery':_diag51}
+                    _accepted=True
+            except (ValueError,TypeError,IndexError,KeyError,cv2.error,OverflowError) as _exc51:
+                _route.record('v51_full_recovery',accepted=False,reason=str(_exc51))
         _route.record('multiscale_trial',accepted=_accepted,wall_ms=round((perf_counter()-_trial_t)*1000,3),horizontal_count=len(_candidate['horizontal']) if _candidate is not None else 0)
         if debug:
             debug.add_geometry('grid_route_multiscale_trial',(perf_counter()-_trial_t)*1000,{'accepted':_accepted,'min_rows':min_rows})
         if _accepted:
             _route.mark_candidate()
             _trial_report['routing_v1']='multiscale_first'
-            return _candidate,_trial_report
+            return _grid_diag.ret((_candidate,_trial_report), locals(), 'App/geometry/geometry_lab/physical_grid_graph_v3.py:detect_physical_graph:L199')
         # Preserve original selection and short-grid priority on failure.
         _route.record('fallback',reason='multiscale_candidate_rejected')
         started=perf_counter() if debug else None
@@ -212,8 +247,8 @@ def detect_physical_graph(image, *, prefer_multiscale=False, min_rows=0):
         if debug:
             debug.add_geometry('physical_v3_short_grid_decision',(perf_counter()-started)*1000,
                                {'accepted':True,'selection':'strong_short_grid'})
-        return baseline,dict(previous,version='physical_grid_graph_v3',
-                             selection='strong_short_grid', v2_status=previous['status'])
+        return _grid_diag.ret((baseline,dict(previous,version='physical_grid_graph_v3',
+                             selection='strong_short_grid', v2_status=previous['status'])), locals(), 'App/geometry/geometry_lab/physical_grid_graph_v3.py:detect_physical_graph:L215')
     if debug:
         debug.add_geometry('physical_v3_short_grid_decision',(perf_counter()-started)*1000,
                            {'accepted':False,'selection':'continue_multiscale'})
@@ -229,12 +264,13 @@ def detect_physical_graph(image, *, prefer_multiscale=False, min_rows=0):
             _report.pop('nodes',None)
             _route.record('trial_reused',selection='frozen_v2_fallback',reason=_reason)
             if debug:debug.add_geometry('grid_route_trial_reused',0,{'selection':'frozen_v2_fallback','reason':_reason})
-            return baseline,_report
+            return _grid_diag.ret((baseline,_report), locals(), 'App/geometry/geometry_lab/physical_grid_graph_v3.py:detect_physical_graph:L232')
         _route.record('trial_reused',selection=_report.get('selection','rejected'))
-        return _candidate,_report
-    return _multiscale_core(gray,response,dark,baseline,previous)
+        return _grid_diag.ret((_candidate,_report), locals(), 'App/geometry/geometry_lab/physical_grid_graph_v3.py:detect_physical_graph:L234')
+    return _grid_diag.ret((_multiscale_core(gray,response,dark,baseline,previous)), locals(), 'App/geometry/geometry_lab/physical_grid_graph_v3.py:detect_physical_graph:L235')
 
 
+@_grid_diag.observe('App/geometry/geometry_lab/physical_grid_graph_v3.py:_multiscale_core_impl')
 def _multiscale_core_impl(gray,response,dark,baseline,previous, *, supplied_parts=None):
     H,W=gray.shape; debug=get_debug()
     parts=multiscale_segments(gray) if supplied_parts is None else supplied_parts
@@ -311,8 +347,8 @@ def _multiscale_core_impl(gray,response,dark,baseline,previous, *, supplied_part
         started=perf_counter()
     if vv is None:
         if debug:debug.add_geometry('physical_v3_decision',0,{'selection':'frozen_v2_fallback' if baseline is not None else 'rejected','reason':'no_evidence_backed_five_vertical_hypothesis'})
-        if baseline is not None:return baseline,dict(report,status='OBSERVED_NOT_VERIFIED',selection='frozen_v2_fallback',edges=previous['edges'])
-        report['reason']='no_evidence_backed_five_vertical_hypothesis';return None,report
+        if baseline is not None:return _grid_diag.ret((baseline,dict(report,status='OBSERVED_NOT_VERIFIED',selection='frozen_v2_fallback',edges=previous['edges'])), locals(), 'App/geometry/geometry_lab/physical_grid_graph_v3.py:_multiscale_core_impl:L314')
+        report['reason']='no_evidence_backed_five_vertical_hypothesis';return _grid_diag.ret((None,report), locals(), 'App/geometry/geometry_lab/physical_grid_graph_v3.py:_multiscale_core_impl:L315')
     vv=junction_outer_boundaries(vv,vertical,horizontal,response)
     accepted=[]
     for rule in horizontal:
@@ -351,22 +387,23 @@ def _multiscale_core_impl(gray,response,dark,baseline,previous, *, supplied_part
         started=perf_counter()
     if baseline is not None and len(clean)<=len(baseline['horizontal']):
         if debug:debug.add_geometry('physical_v3_decision',(perf_counter()-started)*1000,{'selection':'frozen_v2_fallback','reason':'baseline_has_at_least_as_many_boundaries','multiscale_boundaries':len(clean),'baseline_boundaries':len(baseline['horizontal'])})
-        return baseline,dict(report,status='OBSERVED_NOT_VERIFIED',selection='frozen_v2_fallback',edges=previous['edges'])
+        return _grid_diag.ret((baseline,dict(report,status='OBSERVED_NOT_VERIFIED',selection='frozen_v2_fallback',edges=previous['edges'])), locals(), 'App/geometry/geometry_lab/physical_grid_graph_v3.py:_multiscale_core_impl:L354')
     report['edges']=[e for r,e in clean];report['nodes']=[dict(horizontal=j,vertical=i,point=intersection(v,r,(H,W))) for j,(r,e) in enumerate(clean) for i,v in enumerate(vv)]
     if len(clean)<3:
         report['reason']='insufficient_jointly_confirmed_multiscale_edges'
         if debug:debug.add_geometry('physical_v3_decision',(perf_counter()-started)*1000,{'selection':'rejected','reason':report['reason'],'horizontal_boundaries':len(clean)})
-        return None,report
+        return _grid_diag.ret((None,report), locals(), 'App/geometry/geometry_lab/physical_grid_graph_v3.py:_multiscale_core_impl:L359')
     report.update(status='OBSERVED_NOT_VERIFIED',selection='multiscale_joint_graph',horizontal=len(clean),vertical=5)
     if debug:debug.add_geometry('physical_v3_decision',(perf_counter()-started)*1000,{'selection':report['selection'],'horizontal_boundaries':len(clean),'vertical_boundaries':5})
-    return dict(vertical=vv,horizontal=[r for r,e in clean],shape=(H,W)),report
+    return _grid_diag.ret((dict(vertical=vv,horizontal=[r for r,e in clean],shape=(H,W)),report), locals(), 'App/geometry/geometry_lab/physical_grid_graph_v3.py:_multiscale_core_impl:L362')
 
 
+@_grid_diag.observe('App/geometry/geometry_lab/physical_grid_graph_v3.py:_multiscale_core')
 def _multiscale_core(gray,response,dark,baseline,previous):
     from ...config import setting
     # Only speculative MultiScale-first branch. Legacy selection stays unchanged.
     if setting('OCR_GRID_COMBO_SCALE','0')!='1' or baseline is not None or previous.get('status')!='NOT_RUN':
-        return _multiscale_core_impl(gray,response,dark,baseline,previous)
+        return _grid_diag.ret((_multiscale_core_impl(gray,response,dark,baseline,previous)), locals(), 'App/geometry/geometry_lab/physical_grid_graph_v3.py:_multiscale_core:L369')
     from ..grid_speed_combined_v1 import scale_gate,combine_parts
     from ..grid_anomaly_v3 import scan_above
     from ..grid_edge_validator_v12 import audit_rowaware_printed_rows
@@ -378,13 +415,14 @@ def _multiscale_core(gray,response,dark,baseline,previous):
     try:
         ok,reason=scale_gate(image,candidate,report,scan_above,_dest,intersection,audit_rowaware_printed_rows,int(setting('OCR_GRID_ROUTE_MIN_H','10')))
     except (ValueError,TypeError,IndexError,KeyError,AttributeError,cv2.error):
+        _grid_diag.caught(locals(), 'App/geometry/geometry_lab/physical_grid_graph_v3.py:_multiscale_core:L380')
         ok,reason=False,'gate_exception'
     route.record('combo_scale_decision',accepted=ok,reason=reason)
     if ok:
         report['combo_scale']='1x_only_verified'
-        return candidate,report
+        return _grid_diag.ret((candidate,report), locals(), 'App/geometry/geometry_lab/physical_grid_graph_v3.py:_multiscale_core:L385')
     # Identical segment ordering as the original: first 1x, then 1.5x.
     second=multiscale_segments(gray,scales=(1.5,))
     candidate,report=_multiscale_core_impl(gray,response,dark,baseline,previous,supplied_parts=combine_parts(first,second))
     report['combo_scale']='1x_plus_1_5x'
-    return candidate,report
+    return _grid_diag.ret((candidate,report), locals(), 'App/geometry/geometry_lab/physical_grid_graph_v3.py:_multiscale_core:L390')

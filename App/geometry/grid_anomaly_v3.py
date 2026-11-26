@@ -1,5 +1,7 @@
 """Grid anomaly gate. No generated row ordinal is used as OCR evidence."""
 from __future__ import annotations
+# GRID_ABORT_DIAGNOSTICS_V1
+from App import grid_abort_diagnostics_v1 as _grid_diag
 import re
 from time import perf_counter
 import cv2
@@ -40,6 +42,7 @@ def _merge(intervals):
     return sum(b-a for a,b in out)
 
 
+@_grid_diag.observe('App/geometry/grid_anomaly_v3.py:scan_above')
 def scan_above(image, map_x, map_y, xs, ys, *, detailed=False):
     """Search source ink ABOVE candidate grid, never the rendered overlay.
     Rectification coordinates map into the original oriented image.
@@ -48,16 +51,16 @@ def scan_above(image, map_x, map_y, xs, ys, *, detailed=False):
     t=perf_counter(); info={'status':'unknown','reason':'insufficient_geometry'}
     try:
         xs=np.rint(xs).astype(int); ys=np.rint(ys).astype(int)
-        if len(xs)<4 or len(ys)<3 or np.any(np.diff(xs)<=0) or np.any(np.diff(ys)<=0): return info
-        if xs[0]<0 or ys[0]<0 or xs[-1]>=map_x.shape[1] or ys[1]>=map_x.shape[0]: return info
+        if len(xs)<4 or len(ys)<3 or np.any(np.diff(xs)<=0) or np.any(np.diff(ys)<=0): return _grid_diag.ret((info), locals(), 'App/geometry/grid_anomaly_v3.py:scan_above:L51')
+        if xs[0]<0 or ys[0]<0 or xs[-1]>=map_x.shape[1] or ys[1]>=map_x.shape[0]: return _grid_diag.ret((info), locals(), 'App/geometry/grid_anomaly_v3.py:scan_above:L52')
         x0,x1=int(xs[0]),int(xs[-1]); y0,y1=int(ys[0]),int(ys[1]); w=x1-x0
-        if w<60 or y1-y0<5: return info
+        if w<60 or y1-y0<5: return _grid_diag.ret((info), locals(), 'App/geometry/grid_anomaly_v3.py:scan_above:L54')
         src=np.float32([[map_x[y,x],map_y[y,x]] for y,x in [(y0,x0),(y0,x1),(y1,x0),(y1,x1)]])
-        if not np.isfinite(src).all(): return info
+        if not np.isfinite(src).all(): return _grid_diag.ret((info), locals(), 'App/geometry/grid_anomaly_v3.py:scan_above:L56')
         # Bound scan to 6 ordinary row heights and at most 75% of table width.
         pitch=float(np.median(np.diff(ys)))
         depth=int(min(6*pitch,.75*w)); band=y1-y0
-        if depth<20:return info
+        if depth<20:return _grid_diag.ret((info), locals(), 'App/geometry/grid_anomaly_v3.py:scan_above:L60')
         dst=np.float32([[0,depth],[w,depth],[0,depth+band],[w,depth+band]])
         matrix=cv2.getPerspectiveTransform(src,dst)
         # Crop source before warp and conversion (no full-photo grayscale allocation).
@@ -67,7 +70,7 @@ def scan_above(image, map_x, map_y, xs, ys, *, detailed=False):
         ih,iw=image.shape[:2]
         l,t0=np.maximum(np.floor(corners.min(axis=0)).astype(int)-3,0)
         r,b0=np.minimum(np.ceil(corners.max(axis=0)).astype(int)+4,[iw,ih])
-        if r<=l or b0<=t0: return info
+        if r<=l or b0<=t0: return _grid_diag.ret((info), locals(), 'App/geometry/grid_anomaly_v3.py:scan_above:L70')
         roi=image[t0:b0,l:r]
         gray=cv2.cvtColor(roi,cv2.COLOR_BGR2GRAY) if roi.ndim==3 else roi
         local=matrix@np.array([[1,0,l],[0,1,t0],[0,0,1]],float)
@@ -87,7 +90,7 @@ def scan_above(image, map_x, map_y, xs, ys, *, detailed=False):
                         top_support=round(top_support,3), bottom_support=round(bottom_support,3),
                         max_coverage=round(float(above.max()),3) if len(above) else 0.,
                         anchor={'status':'unconfirmed'})
-            return info
+            return _grid_diag.ret((info), locals(), 'App/geometry/grid_anomaly_v3.py:scan_above:L90')
         lsd=cv2.createLineSegmentDetector(cv2.LSD_REFINE_STD).detect(patch)[0]
         horizontal=[]; vertical=[]
         for x,y,X,Y in ([] if lsd is None else lsd.reshape(-1,4)):
@@ -203,12 +206,14 @@ def scan_above(image, map_x, map_y, xs, ys, *, detailed=False):
             anomaly=sum(abs(y-edges[0]['y'])<=tol for y in rail_starts)>=3
         info.update(status='suspect' if anomaly else 'no_signal',reason='printed_grid_above_candidate' if anomaly else 'no_confirmed_extension',edges=edges,rails=rails,depth=depth,patch_shape=list(patch.shape),anchor=anchor, source_to_patch=matrix.tolist(), width=w, pitch=pitch,
                     rail_positions=(xs-x0).tolist())
-        return info
+        return _grid_diag.ret((info), locals(), 'App/geometry/grid_anomaly_v3.py:scan_above:L206')
     except (ValueError,TypeError,IndexError,cv2.error,OverflowError) as exc:
-        info['reason']=type(exc).__name__;return info
+        _grid_diag.caught(locals(), 'App/geometry/grid_anomaly_v3.py:scan_above:L207')
+        info['reason']=type(exc).__name__;return _grid_diag.ret((info), locals(), 'App/geometry/grid_anomaly_v3.py:scan_above:L208')
     finally: info['elapsed_ms']=round((perf_counter()-t)*1000,3)
 
 
+@_grid_diag.observe('App/geometry/grid_anomaly_v3.py:audit_grid')
 def audit_grid(image, rect, geometry, *, crop, read, number_col=0, force_number=False):
     """Geometry first; at most one optional ordinal read per candidate.
 
@@ -242,6 +247,7 @@ def audit_grid(image, rect, geometry, *, crop, read, number_col=0, force_number=
             observations[1]=None
             observations[1]=read(cell)
         except (ValueError,cv2.error,RuntimeError) as exc:
+            _grid_diag.caught(locals(), 'App/geometry/grid_anomaly_v3.py:audit_grid:L244')
             errors.append({'row':1,'error':str(exc)})
     numbers=classify_ordinals(observations)
     numbers['read_reason']=read_reason
@@ -254,13 +260,14 @@ def audit_grid(image, rect, geometry, *, crop, read, number_col=0, force_number=
     confidence='defect' if reasons else 'high' if strong_geometry or scan.get('anchor',{}).get('status')=='aligned' else 'limited'
     if not reasons and numbers['effect'].startswith('positive'):
         confidence='supported' if confidence=='limited' else 'high_supported'
-    return {'status':'suspect' if reasons else 'pass',
+    return _grid_diag.ret(({'status':'suspect' if reasons else 'pass',
             'reasons':reasons,'number_check':numbers,'source_extension':scan,'errors':errors,
             'geometry_confidence':confidence,'strong_geometry':bool(strong_geometry),
             'ordinal_evidence_delta':{'positive_strong':2,'positive_weak':1,'neutral':0,'negative_weak':-1,'negative_strong':-2}[numbers['effect']],
-            'elapsed_ms':round((perf_counter()-t)*1000,3)}
+            'elapsed_ms':round((perf_counter()-t)*1000,3)}), locals(), 'App/geometry/grid_anomaly_v3.py:audit_grid:L257')
 
 
+@_grid_diag.observe('App/geometry/grid_anomaly_v3.py:recover_graph')
 def recover_graph(image, data, scan, *, rule_factory):
     """Prepend observed source rules, retaining all old rule objects.
 
@@ -343,17 +350,18 @@ def recover_graph(image, data, scan, *, rule_factory):
         raise ValueError('recovered_grid_crosses_or_overlaps')
     if np.any(nodes[:,:,0]<0) or np.any(nodes[:,:,0]>=W) or np.any(nodes[:,:,1]<0) or np.any(nodes[:,:,1]>=H):
         raise ValueError('recovered_grid_outside_photo')
-    return {**data,'horizontal':hs,'vertical':vertical}, {'added_rows':len(new),'added_top':len(upper_edges),'added_internal':len(internal_edges),'preserved_horizontal':len(old),'rail_support':rail_support,'fits':fit_details,'nodes':nodes.tolist()}
+    return _grid_diag.ret(({**data,'horizontal':hs,'vertical':vertical}, {'added_rows':len(new),'added_top':len(upper_edges),'added_internal':len(internal_edges),'preserved_horizontal':len(old),'rail_support':rail_support,'fits':fit_details,'nodes':nodes.tolist()}), locals(), 'App/geometry/grid_anomaly_v3.py:recover_graph:L346')
 
 
-def build_direct(image, rect, geometry, scan, *, rectify=False):
+@_grid_diag.observe('App/geometry/grid_anomaly_v3.py:build_direct')
+def build_direct(image, rect, geometry, scan, *, rectify=False, prepared=None):
     from .geometry_lab.detection import Rule
     from .geometry_lab.algorithms import mesh, Result, intersection
     from .geometry_lab.metrics import safety
     from .service import cell_polygon
     data=rect.info.get('source_grid')
     if data is None:raise ValueError('missing_source_graph')
-    data,diag=recover_graph(image,data,scan,rule_factory=Rule)
+    data,diag=recover_graph(image,data,scan,rule_factory=Rule) if prepared is None else prepared
     H,W=image.shape[:2]; vs,hs=data['vertical'],data['horizontal']
     # Same rendering contract as service.py; only the geometry input changes.
     if not rectify:
@@ -394,4 +402,12 @@ def build_direct(image, rect, geometry, scan, *, rectify=False):
         for y in result.ys:cv2.line(overlay,(round(result.xs[0]),round(y)),(round(result.xs[-1]),round(y)),(255,100,0),2)
     gg={**geometry,'warnings':list(geometry.get('warnings',[])), 'method':geometry.get('method','')+' + Direct Anchor V3',
         'safety':check,'rectification':result.method,'direct_anchor_v3':diag}
-    return result,overlay,gg
+    return _grid_diag.ret((result,overlay,gg), locals(), 'App/geometry/grid_anomaly_v3.py:build_direct:L397')
+
+# GRID_ANOMALY_V5_BIDIRECTIONAL
+from .grid_anomaly_v5 import install_hooks as _install_v5
+audit_grid, recover_graph = _install_v5(audit_grid, recover_graph)
+
+# GRID_ANOMALY_V52_UNIVERSAL
+from .grid_anomaly_v52 import audit_hook as _v52_audit_hook
+audit_grid = _v52_audit_hook(audit_grid)

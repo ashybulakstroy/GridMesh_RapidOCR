@@ -317,7 +317,10 @@ def _read_cell(image, row_id, column_id, offset, *, force_single=False):
             not force_single and _has_separate_numeric_lines(image)):
         from .numeric_multiline_fast import read_numeric_multiline
         with _lock:
-            segmented_digits = read_numeric_multiline(image, _run_cyrillic_rec)
+            # Each line is physically observed and must contain numeric OCR.
+            # Preserve low-confidence digits; receipt arithmetic, not the OCR
+            # confidence threshold, decides whether the combined value agrees.
+            segmented_digits = read_numeric_multiline(image, _run_cyrillic_rec, min_score=0.0)
         if segmented_digits is not None:
             bbox = [offset[0],offset[1],offset[0]+image.shape[1],offset[1]+image.shape[0]]
             blocks = [dict(text=part['text'], confidence=part['confidence'],

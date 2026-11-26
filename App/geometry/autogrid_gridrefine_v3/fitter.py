@@ -1,4 +1,6 @@
 """Auto-grid fitting. Reimplements V2 local curve fitting; no ROI or GT file imports."""
+# GRID_ABORT_DIAGNOSTICS_V1
+from App import grid_abort_diagnostics_v1 as _grid_diag
 from App.ocr.performance_deep.live_capture import timed as _deep_timed
 import cv2,numpy as np
 from scipy.ndimage import gaussian_filter1d
@@ -51,13 +53,14 @@ def _curve(axis,target,obs,ref,tol=10):
     return coef
 
 
+@_grid_diag.observe('App/geometry/autogrid_gridrefine_v3/fitter.py:fit_grid')
 @_deep_timed("grid", "App/geometry/autogrid_gridrefine_v3/fitter.py:fit_grid")
 def fit_grid(image,roi,relaxed_horizontal_support=False,anchor_right=False):
     height,width=image.shape[:2]
     x0,y0,x1,y1=[int(z) for z in roi]
     roi_im=image[y0:y1,x0:x1]
     if roi_im.size==0:
-        return {'status':'NO_DETECTION','overlay':image.copy(),'horizontal_boundaries':0,'vertical_boundaries':0}
+        return _grid_diag.ret(({'status':'NO_DETECTION','overlay':image.copy(),'horizontal_boundaries':0,'vertical_boundaries':0}), locals(), 'App/geometry/autogrid_gridrefine_v3/fitter.py:fit_grid:L60')
     xref=int(x0+.45*(x1-x0));yref=int(y0+.52*(y1-y0))
     raw=cv2.createLineSegmentDetector(cv2.LSD_REFINE_STD).detect(cv2.cvtColor(roi_im,cv2.COLOR_BGR2GRAY))[0]
     obs={'h':[],'v':[]}
@@ -162,11 +165,11 @@ def fit_grid(image,roi,relaxed_horizontal_support=False,anchor_right=False):
                 x=ev(coef,y,yref)
                 if ev(hcurves[0],x,xref)<=y<=ev(hcurves[-1],x,xref):pts.append((round(x),y))
             if len(pts)>1:cv2.polylines(overlay,[np.asarray(pts,np.int32)],False,(255,120,0),2,cv2.LINE_AA)
-    return {'overlay':overlay,'status':status,'horizontal_boundaries':len(goodh),
+    return _grid_diag.ret(({'overlay':overlay,'status':status,'horizontal_boundaries':len(goodh),
             'vertical_boundaries':len(goodv),
             'h_positions':[y for y,s in goodh],'v_positions':[x for x,s in goodv],
             'horizontal_rejected':reject,
             'right_horizontal_ink_anchors':right_anchor_diagnostics,
             'physical_ink_refinements':physical_refinements,
             'h_curves':[c.tolist() if c is not None else None for c in hcurves],
-            'v_curves':[c.tolist() if c is not None else None for c in vcurves]}
+            'v_curves':[c.tolist() if c is not None else None for c in vcurves]}), locals(), 'App/geometry/autogrid_gridrefine_v3/fitter.py:fit_grid:L165')

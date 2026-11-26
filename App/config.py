@@ -1,9 +1,12 @@
 """Local .env configuration; process environment has priority."""
+# GRID_ABORT_DIAGNOSTICS_V1
+from App import grid_abort_diagnostics_v1 as _grid_diag
 import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+@_grid_diag.config_read
 def setting(name, default):
     if name in os.environ:
         return os.environ[name]

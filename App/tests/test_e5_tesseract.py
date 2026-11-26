@@ -45,6 +45,33 @@ class TesseractFallbackTest(unittest.TestCase):
         self.assertEqual(len(result['details'][0]['attempts']), 1)
         self.assertEqual(result['details'][0]['confirmation'], 'single_observation_and_receipt_math')
 
+    def test_fractional_price_runs_both_tesseract_presentations(self):
+        item = row(value='2.20')
+        result = self.run_recovery(item, ['220', '220'], force_keys=[(1, 'price')],
+                                   integer_price_keys=[(1, 'price')], accept_invalid=False)
+        self.assertEqual([a['variant'] for a in result['details'][0]['attempts']],
+                         ['raw_digits', '3x_plain'])
+        self.assertEqual([a['text'] for a in result['candidates']], ['220', '220'])
+        self.assertEqual(item['cells']['price']['text'], '2.20')
+
+    def test_fractional_price_tries_binarized_image_when_no_integer_found(self):
+        item = row(value='2.20')
+        result = self.run_recovery(item, ['2.20', '2.20', '220'],
+                                   force_keys=[(1, 'price')],
+                                   integer_price_keys=[(1, 'price')], accept_invalid=False)
+        self.assertEqual([a['variant'] for a in result['details'][0]['attempts']],
+                         ['raw_digits', '3x_plain', '3x_otsu'])
+        self.assertEqual(result['candidates'][-1]['text'], '220')
+
+    def test_matrix_excludes_fractional_ocr_price_but_preserves_user_lock(self):
+        book = CandidateBook()
+        book.add(1, 'price', '2.20', .99, 'initial')
+        book.add(1, 'price', '220', None, 'tesseract')
+        self.assertEqual([x['number'] for x in book.possible_values(1, 'price')], ['220'])
+        self.assertEqual(len(book.cells['1:price']['observations']), 2)
+        book.add(1, 'price', '2.20', None, 'user', user=True)
+        self.assertEqual([x['number'] for x in book.possible_values(1, 'price')], ['2.2'])
+
     def test_disagreeing_readings_are_not_accepted(self):
         item = row()
         result = self.run_recovery(item, ['1550', '15507'])

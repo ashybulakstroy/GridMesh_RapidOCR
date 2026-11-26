@@ -5,6 +5,8 @@ failed header semantics. It never relies on VAT or a receipt-specific offset.
 Failure is explicit: no artificial lines or assumed equal-width columns.
 """
 from __future__ import annotations
+# GRID_ABORT_DIAGNOSTICS_V1
+from App import grid_abort_diagnostics_v1 as _grid_diag
 from App.ocr.performance_deep.live_capture import timed as _deep_timed
 import cv2
 import numpy as np
@@ -189,24 +191,25 @@ def _fit_horizontal(lines,level,rail_x,W):
     return np.array([slope*W,float(offset+slope*W/2)])
 
 
+@_grid_diag.observe('App/geometry/source_grid_v16.py:detect_source_grid')
 @_deep_timed("grid", "App/geometry/source_grid_v16.py:detect_source_grid")
 def detect_source_grid(image, *, rule_factory=None):
     """Return (graph, diagnostic); graph None means never accept uncertain crop."""
     began=perf_counter()
     def fail(reason,**kw):return None,{'status':'rejected','reason':reason,**kw,
                              'wall_ms':round((perf_counter()-began)*1000,2)}
-    if image is None or image.size==0:return fail('empty_image')
+    if image is None or image.size==0:return _grid_diag.ret((fail('empty_image')), locals(), 'App/geometry/source_grid_v16.py:detect_source_grid:L198')
     H,W=image.shape[:2]
     lines=_line_segments(image)
     result,rail_debug=_find_rails(lines,image.shape)
-    if result is None:return fail('rail_failure',rail_debug=rail_debug)
+    if result is None:return _grid_diag.ret((fail('rail_failure',rail_debug=rail_debug)), locals(), 'App/geometry/source_grid_v16.py:detect_source_grid:L202')
     rails,top,bottom=result
     gray=cv2.cvtColor(image,cv2.COLOR_BGR2GRAY) if image.ndim==3 else image
     levels,level_debug=_horizontal_levels(gray,rails,top,bottom)
-    if len(levels)<5:return fail('too_few_observed_rows',rails=rail_debug,levels=levels)
+    if len(levels)<5:return _grid_diag.ret((fail('too_few_observed_rows',rails=rail_debug,levels=levels)), locals(), 'App/geometry/source_grid_v16.py:detect_source_grid:L206')
     # Only physically witnessed rows; tolerate VAT-free 2+ item receipts.
     levels=[p for p in levels if p['columns']>=2 or p['strength']>max(55,.18*(rails[-1]['x_ref']-rails[0]['x_ref']))]
-    if len(levels)<5:return fail('too_few_supported_rows',rails=rail_debug,levels=levels)
+    if len(levels)<5:return _grid_diag.ret((fail('too_few_supported_rows',rails=rail_debug,levels=levels)), locals(), 'App/geometry/source_grid_v16.py:detect_source_grid:L209')
     levels=sorted(levels,key=lambda x:x['y'])
     if rule_factory is None:
         from .geometry_lab.detection import Rule as rule_factory
@@ -224,13 +227,13 @@ def detect_source_grid(image, *, rule_factory=None):
     xs=np.array([[v.eval((p['y']-H/2)/H) for v in vertical] for p in levels]);
     ys=np.array([[h.eval((x-W/2)/W) for x in xs[i]] for i,h in enumerate(horizontal)])
     if np.min(np.diff(xs,axis=1))<=6 or np.min(np.diff(ys,axis=0))<=5:
-        return fail('crossing_or_too_close',rails=rail_debug,levels=levels)
+        return _grid_diag.ret((fail('crossing_or_too_close',rails=rail_debug,levels=levels)), locals(), 'App/geometry/source_grid_v16.py:detect_source_grid:L227')
     if xs.min()<0 or xs.max()>=W or ys.min()<0 or ys.max()>=H:
-        return fail('outside_image',rails=rail_debug,levels=levels)
+        return _grid_diag.ret((fail('outside_image',rails=rail_debug,levels=levels)), locals(), 'App/geometry/source_grid_v16.py:detect_source_grid:L229')
     # A fabricated header is especially dangerous: accept only if two top
     # levels span the same physical vertical rail system.
     if max([r['first'] for r in rails[:2]])>levels[1]['y']+20:
-        return fail('top_two_rows_unverified',rails=rail_debug,levels=levels)
+        return _grid_diag.ret((fail('top_two_rows_unverified',rails=rail_debug,levels=levels)), locals(), 'App/geometry/source_grid_v16.py:detect_source_grid:L233')
     # V16: every right-hand corner must be supported by source-photo ink.
     # This alters the actual curves consumed by GridMesh, not just the preview.
     # V16: trace the observed ink path across left, middle AND right of
@@ -238,15 +241,16 @@ def detect_source_grid(image, *, rule_factory=None):
     try:
         from .trace_printed_rules_v16 import trace_printed_horizontals
     except ImportError:
+        _grid_diag.caught(locals(), 'App/geometry/source_grid_v16.py:detect_source_grid:L240')
         from trace_printed_rules_v16 import trace_printed_horizontals
     traced,trace_report=trace_printed_horizontals(image,graph)
     if traced is None:
-        return fail('physical_ink_tracing_not_verified',trace_v16=trace_report,
-                    rails=rail_debug,levels=levels)
-    return traced,{'status':'candidate_requires_header_and_full_audit',
+        return _grid_diag.ret((fail('physical_ink_tracing_not_verified',trace_v16=trace_report,
+                    rails=rail_debug,levels=levels)), locals(), 'App/geometry/source_grid_v16.py:detect_source_grid:L244')
+    return _grid_diag.ret((traced,{'status':'candidate_requires_header_and_full_audit',
                   'selection':SELECTED,'rails':rail_debug,'levels':levels,
                   'level_detail':level_debug,'trace_v16':trace_report,
-                  'wall_ms':round((perf_counter()-began)*1000,2)}
+                  'wall_ms':round((perf_counter()-began)*1000,2)}), locals(), 'App/geometry/source_grid_v16.py:detect_source_grid:L246')
 
 
 
@@ -337,6 +341,7 @@ def _nodes_from_graph(graph, shape):
     return np.asarray(rows,float)
 
 
+@_grid_diag.observe('App/geometry/source_grid_v16.py:validate_source_grid')
 @_deep_timed("grid", "App/geometry/source_grid_v16.py:validate_source_grid")
 def validate_source_grid(image, graph, diagnostic):
     """Full source row census + independent per-curve LSD verification.
@@ -350,27 +355,27 @@ def validate_source_grid(image, graph, diagnostic):
     nodes=_nodes_from_graph(graph,image.shape)
     H,W=image.shape[:2]
     if nodes.shape[1:]!=(5,2) or len(nodes)<5 or not np.isfinite(nodes).all():
-        return False,{'reason':'invalid_source_nodes'}
+        return _grid_diag.ret((False,{'reason':'invalid_source_nodes'}), locals(), 'App/geometry/source_grid_v16.py:validate_source_grid:L353')
     if np.min(np.diff(nodes[:,:,0],axis=1))<=6 or np.min(np.diff(nodes[:,:,1],axis=0))<=5:
-        return False,{'reason':'crossing_source_grid'}
+        return _grid_diag.ret((False,{'reason':'crossing_source_grid'}), locals(), 'App/geometry/source_grid_v16.py:validate_source_grid:L355')
     gray=cv2.cvtColor(image,cv2.COLOR_BGR2GRAY) if image.ndim==3 else image
     raw_lines=_line_segments(image)
     detected,_=_find_rails(raw_lines,image.shape)
-    if detected is None:return False,{'reason':'rails_disappeared_during_audit'}
+    if detected is None:return _grid_diag.ret((False,{'reason':'rails_disappeared_during_audit'}), locals(), 'App/geometry/source_grid_v16.py:validate_source_grid:L359')
     rails,top,bottom=detected
     census,_=_horizontal_levels(gray,rails,top,bottom)
     census=[v for v in census if v['columns']>=2 or v['strength']>55]
-    if not census:return False,{'reason':'no_source_row_census'}
+    if not census:return _grid_diag.ret((False,{'reason':'no_source_row_census'}), locals(), 'App/geometry/source_grid_v16.py:validate_source_grid:L363')
     unmatched=[]
     for observed in census:
         distances=[abs(observed['y']-np.median(row[:,1])) for row in nodes]
         if min(distances)>10:unmatched.append(observed)
-    if unmatched:return False,{'reason':'missing_observed_source_rows','unmatched':unmatched}
+    if unmatched:return _grid_diag.ret((False,{'reason':'missing_observed_source_rows','unmatched':unmatched}), locals(), 'App/geometry/source_grid_v16.py:validate_source_grid:L368')
     missing=[]
     for index,row in enumerate(nodes):
         nearest=min(census,key=lambda v:abs(v['y']-np.median(row[:,1])))
         if abs(nearest['y']-np.median(row[:,1]))>10:missing.append(index)
-    if missing:return False,{'reason':'unverified_candidate_rows','indices':missing}
+    if missing:return _grid_diag.ret((False,{'reason':'unverified_candidate_rows','indices':missing}), locals(), 'App/geometry/source_grid_v16.py:validate_source_grid:L373')
     # The V12 validator also searches for previously unseen lines across the
     # entire paper. For this photograph the first faint line is demonstrable
     # in the original thresholded pixels, but not detected by regular LSD.
@@ -379,20 +384,20 @@ def validate_source_grid(image, graph, diagnostic):
         old_missing=base.get('unverified_grid_edges',[])
         if not (base.get('reason')=='not_all_grid_lines_optically_verified' and
                 old_missing and set(old_missing)<={0,1}):
-            return False,{'reason':'independent_audit_rejected','audit':json_native(base)}
+            return _grid_diag.ret((False,{'reason':'independent_audit_rejected','audit':json_native(base)}), locals(), 'App/geometry/source_grid_v16.py:validate_source_grid:L382')
         special=[]
         for index in old_missing:
             observed=min(census,key=lambda v:abs(v['y']-np.median(nodes[index,:,1])))
             if (abs(observed['y']-np.median(nodes[index,:,1]))>5 or
                     observed['columns']<3 or observed['strength']<30):
-                return False,{'reason':'weak_header_rule_not_confirmed',
-                              'index':index,'observed':observed}
+                return _grid_diag.ret((False,{'reason':'weak_header_rule_not_confirmed',
+                              'index':index,'observed':observed}), locals(), 'App/geometry/source_grid_v16.py:validate_source_grid:L388')
             special.append({'index':int(index),'observed_y':float(observed['y']),
                             'supported_columns':int(observed['columns']),
                             'original_ink_px':int(observed['strength'])})
     else:special=[]
-    return True,json_native({'status':'accepted_source_pixel_census_and_independent_lsd',
+    return _grid_diag.ret((True,json_native({'status':'accepted_source_pixel_census_and_independent_lsd',
                              'boundaries':len(nodes),'vertical_rails':5,
                              'weak_header_original_pixel_proofs':special,
                              'independent_lsd':base,
-                             'source_census':census})
+                             'source_census':census})), locals(), 'App/geometry/source_grid_v16.py:validate_source_grid:L394')

@@ -4,6 +4,8 @@ This is an exploratory detector, intended as a lab plugin, never as a silent
 replacement for production OCR. All coordinates are in original image pixels.
 """
 from __future__ import annotations
+# GRID_ABORT_DIAGNOSTICS_V1
+from App import grid_abort_diagnostics_v1 as _grid_diag
 from App.ocr.performance_deep.live_capture import timed as _deep_timed
 
 from dataclasses import dataclass
@@ -225,6 +227,7 @@ def _recover_by_observed_vertical_rails(image, segments):
             return candidate, fitted
     return None, None
 
+@_grid_diag.observe('App/geometry/autogrid_gridrefine_v3/detector.py:detect')
 def detect(image):
     """Return (overlay, JSON-serializable metrics); does not consult GT or prior ROIs."""
     tic=perf_counter(); debug=get_debug(); step=perf_counter() if debug else None
@@ -254,10 +257,10 @@ def detect(image):
         if debug:debug.add_geometry('autogrid_vertical_rail_recovery',(perf_counter()-step)*1000,
                                     {'trigger':'no_roi_candidate','found':recovered_roi is not None})
         if recovered_roi is None:
-            return overlay,{'status':'NO_DETECTION','auto_roi':None,
+            return _grid_diag.ret((overlay,{'status':'NO_DETECTION','auto_roi':None,
                             'horizontal_boundaries':0,'vertical_boundaries':0,
                             'elapsed_seconds':round(perf_counter()-tic,4),
-                            'candidates':[]}
+                            'candidates':[]}), locals(), 'App/geometry/autogrid_gridrefine_v3/detector.py:detect:L257')
         best, result = recovered_roi, recovered_result
         roi_fallback=True
     else:
@@ -319,4 +322,4 @@ def detect(image):
          'elapsed_seconds':round(perf_counter()-tic,4),
          'input_shape':[height,width]}
     res.update(result)
-    return overlay,res
+    return _grid_diag.ret((overlay,res), locals(), 'App/geometry/autogrid_gridrefine_v3/detector.py:detect:L322')

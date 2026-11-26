@@ -18,7 +18,7 @@ def _review_reasons(record, *, math_match=True):
     if cell and parse_number(cell.get('text')) is None:
         reasons.append('Выбранный текст не удалось прочитать как число.')
     if cell.get('numeric_issue'):
-        reasons.append('Для ячейки отмечена проблема при проверке числа.')
+        reasons.append(str(cell['numeric_issue']))
     if cell.get('confidence') is not None and float(cell['confidence'])<.8:
         reasons.append('У выбранного чтения низкая уверенность OCR (меньше 0,8).')
     if not math_match and record.get('field') not in ('receipt_total','printed_vat'):

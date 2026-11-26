@@ -1,0 +1,5 @@
+.ocr-math-host{position:relative;display:flow-root;}
+.ocr-math-canvas{position:absolute;display:block;pointer-events:none;object-fit:contain;background:#000;z-index:1;}
+.ocr-math-canvas[hidden],.ocr-math-controls[hidden]{display:none!important;}
+.ocr-math-controls{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:4px 0 10px;font-size:12px;color:#526780;}
+.ocr-math-controls button{padding:5px 9px;font-size:12px;flex:0 0 auto;background:#e5edf7;color:#24334a;}

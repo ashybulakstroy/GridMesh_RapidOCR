@@ -59,7 +59,8 @@ def read_tesseract(image, exe, *, row_id, field, variant, whitelist):
 @_deep_timed("totals", "App/ocr/e5_tesseract.py:recover_with_tesseract")
 def recover_with_tesseract(rows, crops, recovery, *, max_cells=3, book=None,
                            exclude_keys=(), accept_invalid=True, force_keys=(),
-                           printed_total=None, footer_attempts=(), vat_rate=None):
+                           printed_total=None, footer_attempts=(), vat_rate=None,
+                           integer_price_keys=()):
     """Try invalid fields and conflicting OCR readings; keep conflicts for review."""
     if setting('OCR_E5_TESSERACT', '1') != '1':
         return {'status':'disabled', 'details':[], 'candidates':[]}
@@ -108,6 +109,7 @@ def recover_with_tesseract(rows, crops, recovery, *, max_cells=3, book=None,
     if not exe or not (ROOT / 'models/tesseract_kaz/tessdata/kaz.traineddata').is_file():
         return {'status':'unavailable', 'details':[], 'candidates':[], 'error':'tesseract_or_kaz_model_missing'}
     details, candidates = [], []
+    integer_price_keys = {tuple(key) for key in integer_price_keys}
     for key, (_, row, field) in sorted(targets.items(), key=lambda item:item[1][0])[:max_cells]:
         original = row['cells'][field]
         image, roi = prepare_numeric_input(crops[key], field)
@@ -118,12 +120,20 @@ def recover_with_tesseract(rows, crops, recovery, *, max_cells=3, book=None,
         observed = valid_observation(attempts, parse_number)
         # A digits-only whitelist can omit printed symbols. Skip the second
         # presentation only when independent receipt arithmetic confirms it.
-        if observed is not None and len(attempts) == 1 and not math_confirms(
+        if observed is not None and len(attempts) == 1 and (key in integer_price_keys or not math_confirms(
                 rows, key[0], field, observed['text'], printed_total=printed_total,
-                footer_attempts=footer_attempts, vat_rate=vat_rate, parse=parse_number):
+                footer_attempts=footer_attempts, vat_rate=vat_rate, parse=parse_number)):
             enlarged = cv2.resize(image, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
             attempts.append(read_tesseract(enlarged, exe, row_id=key[0], field=field,
                                             variant='3x_plain', whitelist=False))
+        if key in integer_price_keys and not any(
+                not attempt.get('error') and (value := parse_number(attempt.get('text'))) is not None
+                and value.is_finite() and value == value.to_integral_value() for attempt in attempts):
+            enlarged = cv2.resize(image, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+            gray = cv2.cvtColor(enlarged, cv2.COLOR_BGR2GRAY) if enlarged.ndim == 3 else enlarged
+            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+            attempts.append(read_tesseract(binary, exe, row_id=key[0], field=field,
+                                            variant='3x_otsu', whitelist=False))
         item = {'row_id':key[0], 'column_id':field, 'original_text':original['text'],
                 'attempts':attempts, 'numeric_roi':roi, 'accepted':False}
         for attempt in attempts:

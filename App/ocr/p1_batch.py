@@ -10,6 +10,8 @@ from time import perf_counter as rec_counter
 import numpy as np
 
 from .engine import engine, read_cell, _has_separate_numeric_lines, _lock
+from . import live_total_ring as _ltr  # LIVE_TOTAL_RING_V1
+from . import live_receipt as _live_receipt
 from .experiment_rec_trace import rec_scope, record_rec
 from .debug_performance import get_debug, report_issue
 from .numeric_roi import crop_numeric_ink, split_price_currency, exclude_price_currency
@@ -121,6 +123,7 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
         if _debug is not None:
             _debug.capture_numeric_input(cell)
         if mode == 'cell':
+            _ltr.started(cell.column_id)
             _cell_t0=rec_counter() if _debug is not None else None
             try:
                 with rec_scope([key], 'primary_rec_cell'):
@@ -130,6 +133,8 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
                     item['text_ocr_strategy'] = item.get('strategy', 'direct_or_detector')
                 item['strategy'] = 'primary_rec_cell'
                 out[key] = item
+                _ltr.observe(key, item)
+                _live_receipt.observe(key, item)
                 stats['cell_calls'] += 1
                 if _debug is not None:
                     _debug.add_cell(cell,(rec_counter()-_cell_t0)*1000,
@@ -153,14 +158,19 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
                 fallback, _ = read_batches([originals[key]], batch_size=batch_size,
                                            budget_multiplier=budget_multiplier)
                 out.update(fallback)
+                _ltr.observe_all(fallback)
+                _live_receipt.observe_all(fallback)
             continue
         if _has_separate_numeric_lines(cell.image):
+            _ltr.started(cell.column_id)
             _multi_t0=rec_counter() if _debug is not None else None
             with rec_scope([(cell.row_id,cell.column_id)],'primary_multiline_cell'):
                 item = read_cell(cell.image, cell.row_id, cell.column_id, cell.offset)
             item['source_bbox'] = cell.source_bbox
             item['strategy'] = item.get('strategy','legacy_multiline')
             out[key] = item
+            _ltr.observe(key, item)
+            _live_receipt.observe(key, item)
             stats['multiline_fallback'] += 1
             if _debug is not None:
                 _debug.add_fallback(cell,(rec_counter()-_multi_t0)*1000,
@@ -176,6 +186,8 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
         bucket = pending[group]
         for start in range(0, len(bucket), batch_size):
             chunk = bucket[start:start + batch_size]
+            for _ltr_cell in chunk:
+                _ltr.started(_ltr_cell.column_id)
             stats['batch_calls'] += 1
             _batch_t0=rec_counter() if _debug is not None else None
             try:
@@ -198,6 +210,8 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
                     raise RuntimeError('Batch returned incorrect number of results')
                 for c,txt,score in zip(chunk,response.txts,response.scores):
                     out[(c.row_id,c.column_id)] = _convert(c, txt, score)
+                    _ltr.observe((c.row_id,c.column_id), out[(c.row_id,c.column_id)])
+                    _live_receipt.observe((c.row_id,c.column_id), out[(c.row_id,c.column_id)])
                     if not str(txt).strip():
                         report_issue(source='RapidOCR',operation='recognize_txt',
                                      kind='empty_text',severity='warning',
@@ -226,6 +240,8 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
                     item['source_bbox'] = c.source_bbox
                     item['strategy'] = 'legacy_batch_fallback'
                     out[(c.row_id,c.column_id)] = item
+                    _ltr.observe((c.row_id,c.column_id), item)
+                    _live_receipt.observe((c.row_id,c.column_id), item)
     # Inspect only suspicious all-numeric prices ending in 7. Correct currency
     # text needs no extra work; image evidence is required before changing a digit.
     currency_skipped = []
@@ -270,6 +286,8 @@ def read_batches(cells, *, batch_size=8, budget_multiplier=1, mode="batch", unli
         result['bbox'] = bbox
         for block in result.get('blocks', []):
             block['bbox'] = bbox.copy()
+    _ltr.observe_all(out)  # after existing currency corrections
+    _live_receipt.observe_all(out)
     return out, stats
 
 

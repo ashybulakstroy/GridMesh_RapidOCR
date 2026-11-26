@@ -15,3 +15,18 @@
 #text-review:not([hidden]){margin:12px 0;padding:10px 12px;border-radius:8px;background:#fff3d7;color:#754400}
 
 #receipt-view td.text-review-yellow, #result input.text-review-yellow{background:#fff1a8!important;color:#302700!important;}
+#receipt-view td.numeric-review{background:#fff1a8;color:#302700}
+#live-receipt .live-receipt-note{color:#754400;background:#fff3d7;border-radius:8px;padding:8px 10px}
+.photo-panel .original-photo-viewport{display:block;width:fit-content;max-width:100%;margin:10px auto;overflow:hidden;border-radius:4px}
+.photo-panel #original{display:block;max-width:100%;max-height:70vh;margin:0;transform-origin:50% 50%;transform:scale(1)}
+.photo-panel .original-photo-viewport.zoom-pulse-active #original{animation:original-photo-zoom-pulse-v1 2000ms linear both;will-change:transform}
+@keyframes original-photo-zoom-pulse-v1{
+  0%{transform:translate(0,0) scale(1)}
+  25%{transform:translate(0,0) scale(2)}
+  37.5%{transform:translate(-50%,0) scale(2)}
+  50%{transform:translate(50%,0) scale(2)}
+  62.5%{transform:translate(0,-50%) scale(2)}
+  75%{transform:translate(0,50%) scale(2)}
+  100%{transform:translate(0,0) scale(1)}
+}
+@media(prefers-reduced-motion:reduce){.photo-panel .original-photo-viewport.zoom-pulse-active #original{animation:none;will-change:auto}}

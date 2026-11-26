@@ -26,6 +26,21 @@ class MultilineVatFastTest(unittest.TestCase):
         result = read_numeric_multiline(image, lambda _: SimpleNamespace(txts=[next(values)], scores=[.99]))
         self.assertIsNone(result)
 
+    def test_engine_keeps_observed_low_confidence_second_line(self):
+        from unittest.mock import patch
+        from App.ocr import engine
+        image = np.full((60, 130, 3), 255, np.uint8)
+        cv2.putText(image, '11424', (3, 20), cv2.FONT_HERSHEY_SIMPLEX, .6, (0, 0, 0), 2)
+        cv2.putText(image, '0', (3, 53), cv2.FONT_HERSHEY_SIMPLEX, .6, (0, 0, 0), 2)
+        readings = iter([SimpleNamespace(txts=['11424'], scores=[.99]),
+                         SimpleNamespace(txts=['0'], scores=[.405])])
+        with patch.object(engine, '_run_cyrillic_rec', side_effect=lambda _: next(readings)), \
+             patch.object(engine, 'read_full', side_effect=AssertionError('unexpected detector')):
+            result = engine._read_cell(image, 3, 'quantity', (0, 0))
+        self.assertEqual(result['text'], '114240')
+        self.assertEqual(result['confidence'], .405)
+        self.assertEqual([block['text'] for block in result['blocks']], ['11424', '0'])
+
     def test_gate_requires_observed_footer_and_matching_sum(self):
         rows = [{'row_id':1, 'cells':{'quantity':{'text':'2', 'confidence':.9},
                                       'price':{'text':'10', 'confidence':.9}}}]

@@ -1,4 +1,6 @@
 """Automatic observed-grid geometry, with explicit safety warnings."""
+# GRID_ABORT_DIAGNOSTICS_V1
+from App import grid_abort_diagnostics_v1 as _grid_diag
 from App.ocr.performance_deep.live_capture import timed as _deep_timed
 import cv2
 import numpy as np
@@ -97,7 +99,18 @@ def _repair_extreme_horizontal_curves(image, data):
         ys=rules[i].eval(norm)
         linear=np.linspace(ys[0],ys[-1],len(ys))
         if np.max(np.abs(ys-linear)) > max(12,width*.035):
-            suspicious.append(i)
+            # GRID_ANOMALY_V51_FULL_COMPLETENESS: only proven curves skip old repair.
+            from ..config import setting as _v51_setting
+            _confirmed=False
+            if data.get('v51_recovery_proven') and _v51_setting('OCR_GRID_ANOMALY_V51_CURVES','0')=='1':
+                try:
+                    from .grid_anomaly_v51 import verified_curvature
+                    _confirmed,_proof=verified_curvature(image,data,i)
+                    from . import detector_routing_v1 as _v51_route
+                    _v51_route.record('v51_curvature',index=i,accepted=_confirmed,proof=_proof)
+                except (ValueError,TypeError,IndexError,KeyError,cv2.error,OverflowError) as _exc:
+                    _confirmed=False
+            if not _confirmed:suspicious.append(i)
     if not suspicious:
         return data,0,0
     gray=cv2.cvtColor(image,cv2.COLOR_BGR2GRAY) if image.ndim==3 else image
@@ -149,6 +162,7 @@ def _repair_extreme_horizontal_curves(image, data):
         return {**data,'horizontal':rules},repaired,unresolved
     return data,0,unresolved
 
+@_grid_diag.observe('App/geometry/service.py:_build_grid_core')
 def _build_grid_core(image, *, rectify=False, phase=None, pre_detected=None):
     _debug=get_debug()
     _grid_t0=perf_counter() if _debug is not None else None
@@ -196,7 +210,7 @@ def _build_grid_core(image, *, rectify=False, phase=None, pre_detected=None):
             if _prefer:
                 physical, physical_report = detect_physical_graph(
                     image, prefer_multiscale=True,
-                    min_rows=len(data['horizontal']) if data is not None else 0)
+                    min_rows=len(data['horizontal']) if data is not None else 0, automatic=data)
             else:
                 physical, physical_report = detect_physical_graph(image)
             if _debug is not None:
@@ -271,6 +285,7 @@ def _build_grid_core(image, *, rectify=False, phase=None, pre_detected=None):
             try:
                 data,_combo_diag=premesh(image,data,scan_above,recover_graph,_dest,Rule)
             except cv2.error:
+                _grid_diag.caught(locals(), 'App/geometry/service.py:_build_grid_core:L273')
                 _combo_diag=None
             _combo_route.record('combo_premesh',accepted=_combo_diag is not None)
     H, W = image.shape[:2]
@@ -349,22 +364,23 @@ def _build_grid_core(image, *, rectify=False, phase=None, pre_detected=None):
         _debug.add_geometry('safety_and_overlay',(perf_counter()-_overlay_t0)*1000)
     if _combo_diag is not None and (check.get('status')!='MEASURED' or check.get('folded_fraction',1)>0 or check.get('source_valid_fraction',0)<.995):
         raise ValueError('combo premesh: unsafe repaired mesh')
-    return result, overlay, {'combo_premesh':_combo_diag,'method': method, 'autogrid_vertical_count': auto_vertical_count,
+    return _grid_diag.ret((result, overlay, {'combo_premesh':_combo_diag,'method': method, 'autogrid_vertical_count': auto_vertical_count,
                              'repaired_extreme_horizontal': repaired_curves,
                              'unresolved_extreme_horizontal': unresolved_curves,
                              'physical_detection_selection': report.get('selection'),
                              'fold_recovered_horizontal': fold_recovered, 'left_recovered_horizontal': left_recovered,
                              'ridge_refined_horizontal': sum(edge.get('refinement') == 'nearby_source_ridge_3px' for edge in report.get('edges', [])),
-                             'rectification': result.method, 'safety': check, 'warnings': warnings}
+                             'rectification': result.method, 'safety': check, 'warnings': warnings}), locals(), 'App/geometry/service.py:_build_grid_core:L352')
 
 
 
 # LOCALGRID_ROI_INTEGRATION_V1
+@_grid_diag.observe('App/geometry/service.py:build_grid')
 def build_grid(image, *, rectify=False, phase=None):
     """Fast local ROI path with a production-safe full-image fallback."""
     from ..config import setting
     if setting('OCR_LOCALGRID_MODE', 'on').strip().lower() != 'on':
-        return _build_grid_core(image, rectify=rectify, phase=phase)
+        return _grid_diag.ret((_build_grid_core(image, rectify=rectify, phase=phase)), locals(), 'App/geometry/service.py:build_grid:L367')
     from .local_grid_runtime import try_local_grid
     from time import perf_counter as _local_clock
     start = _local_clock()
@@ -372,6 +388,7 @@ def build_grid(image, *, rectify=False, phase=None):
     try:
         graph, report, stats = try_local_grid(image)
     except Exception as exc:
+        _grid_diag.caught(locals(), 'App/geometry/service.py:build_grid:L374')
         stats = {'status':'exception', 'reason':f'{type(exc).__name__}: {exc}',
                   'fallback_to_full':True}
         graph = None
@@ -392,10 +409,11 @@ def build_grid(image, *, rectify=False, phase=None):
             geometry['local_grid_roi'] = stats
             if debug is not None and stats is not None:
                 debug.add_geometry('local_grid_roi', stats.get('total_ms',(_local_clock()-start)*1000), stats)
-            return result, overlay, geometry
+            return _grid_diag.ret((result, overlay, geometry), locals(), 'App/geometry/service.py:build_grid:L395')
         except Exception as exc:
             # A valid detected grid might still fail mesh/safety construction.
             # Never fail a production job merely because the optional path failed.
+            _grid_diag.caught(locals(), 'App/geometry/service.py:build_grid:L396')
             if stats is not None:
                 stats['fallback_to_full'] = True
                 stats['postprocess_error'] = f'{type(exc).__name__}: {exc}'
@@ -406,7 +424,7 @@ def build_grid(image, *, rectify=False, phase=None):
         debug.add_geometry('local_grid_roi', stats.get('total_ms',(_local_clock()-start)*1000), stats)
     result, overlay, geometry = _build_grid_core(image, rectify=rectify, phase=phase)
     geometry['local_grid_roi'] = stats
-    return result, overlay, geometry
+    return _grid_diag.ret((result, overlay, geometry), locals(), 'App/geometry/service.py:build_grid:L409')
 
 @_deep_timed("grid", "App/geometry/service.py:cell_polygon")
 def cell_polygon(result, row, column, *, nodes=None):
@@ -450,10 +468,11 @@ def cell_crop(result, row, column):
 
 # PAPER_FIRST_FULLGRID_V16: fallback V12 geometry plus independent V16 source rails.
 # Normal, successful V4 receipts do not pay for an extra local search.
+@_grid_diag.observe('App/geometry/service.py:build_grid_paper_rescue')
 def build_grid_paper_rescue(image, *, rectify=False, phase=None, header_validator=None):
     from ..config import setting
     if setting('OCR_PAPER_RESCUE_V12', '1') != '1':
-        return None
+        return _grid_diag.ret((None), locals(), 'App/geometry/service.py:build_grid_paper_rescue:L456')
     from .paper_first_grid_v12 import try_paper_grid, json_native
     for retry in (False, True):
         try:
@@ -474,28 +493,30 @@ def build_grid_paper_rescue(image, *, rectify=False, phase=None, header_validato
                 continue
             geometry['method'] = 'PaperFirst V12 · source-verified local AutoGrid'
             geometry['paper_first_v12'] = json_native(stats)
-            return result,overlay,geometry
+            return _grid_diag.ret((result,overlay,geometry), locals(), 'App/geometry/service.py:build_grid_paper_rescue:L477')
         except Exception as exc:
             # An optional rescue can never break the existing geometry route.
+            _grid_diag.caught(locals(), 'App/geometry/service.py:build_grid_paper_rescue:L478')
             pass  # Rescue failed: let the original error stand
-    return None
+    return _grid_diag.ret((None), locals(), 'App/geometry/service.py:build_grid_paper_rescue:L481')
 
 
 # PAPER_FIRST_FULLGRID_V16: independent physical-ink recovery. This route
 # runs only when the usual first table band is implausible or a header fails.
-def build_grid_source_rescue(image, *, rectify=False, phase=None, header_validator=None):
+@_grid_diag.observe('App/geometry/service.py:build_grid_source_rescue')
+def _build_grid_source_rescue_before_short_v1(image, *, rectify=False, phase=None, header_validator=None):
     from ..config import setting
     if setting('OCR_SOURCE_GRID_V16','1') != '1':
-        return None
+        return _grid_diag.ret((None), locals(), 'App/geometry/service.py:build_grid_source_rescue:L489')
     try:
         from .source_grid_v16 import detect_source_grid, validate_source_grid
         from .paper_first_grid_v12 import json_native
         graph,diagnostic=detect_source_grid(image)
         if graph is None:
-            return None
+            return _grid_diag.ret((None), locals(), 'App/geometry/service.py:build_grid_source_rescue:L495')
         accepted,audit=validate_source_grid(image,graph,diagnostic)
         if not accepted:
-            return None
+            return _grid_diag.ret((None), locals(), 'App/geometry/service.py:build_grid_source_rescue:L498')
         report={'status':'OBSERVED_NOT_GT','selection':'source_verified_five_rail_v16',
                 'version':'source_grid_v16','ink_validation':audit}
         result,overlay,geometry=_build_grid_core(
@@ -505,12 +526,34 @@ def build_grid_source_rescue(image, *, rectify=False, phase=None, header_validat
                 safe.get('folded_fraction',1)>0 or
                 safe.get('source_valid_fraction',0)<.995 or
                 geometry.get('unresolved_extreme_horizontal',0)>0):
-            return None
+            return _grid_diag.ret((None), locals(), 'App/geometry/service.py:build_grid_source_rescue:L508')
         if header_validator is not None and not header_validator(result):
-            return None
+            return _grid_diag.ret((None), locals(), 'App/geometry/service.py:build_grid_source_rescue:L510')
         geometry['method']='SourceGrid V16 · independently confirmed source rails'
         geometry['source_grid_v16']=json_native({'detector':diagnostic,'audit':audit})
-        return result,overlay,geometry
+        return _grid_diag.ret((result,overlay,geometry), locals(), 'App/geometry/service.py:build_grid_source_rescue:L513')
     except Exception as exc:
         # Do not turn a failed optional rescue into corrupt production output.
+        _grid_diag.caught(locals(), 'App/geometry/service.py:build_grid_source_rescue:L514')
+        return _grid_diag.ret((None), locals(), 'App/geometry/service.py:build_grid_source_rescue:L516')
+
+# SHORT_RECEIPT_GRID_RECOVERY_V1: only on established source-rescue path.
+@_grid_diag.observe('App/geometry/service.py:short_receipt_grid_v1')
+def build_grid_source_rescue(image, *, rectify=False, phase=None, header_validator=None):
+    from ..config import setting
+    previous = _build_grid_source_rescue_before_short_v1(image, rectify=rectify,
+        phase=phase, header_validator=header_validator)
+    if previous is not None or setting('OCR_SHORT_RECEIPT_GRID_V1','1') != '1' or header_validator is None:
+        return previous
+    if setting('OCR_SOURCE_GRID_V16','1') != '1':
         return None
+    try:
+        from .short_receipt_grid_v1 import rescue
+        result = rescue(image, rectify=rectify, phase=phase,
+                        header_validator=header_validator, build_core=_build_grid_core,
+                        physical_detector=detect_physical_graph)
+        return _grid_diag.ret(result, locals(), 'App/geometry/service.py:short_receipt_grid_v1:result')
+    except Exception:
+        _grid_diag.caught(locals(), 'App/geometry/service.py:short_receipt_grid_v1')
+        return None  # preserve the original geometry failure, never force a result
+

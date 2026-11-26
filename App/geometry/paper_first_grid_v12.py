@@ -5,6 +5,8 @@ If a paper envelope exists, search it at native resolution before any full-frame
 AutoGrid. Any ambiguous/missing separator causes rejection and legacy fallback.
 """
 from __future__ import annotations
+# GRID_ABORT_DIAGNOSTICS_V1
+from App import grid_abort_diagnostics_v1 as _grid_diag
 from time import perf_counter
 from collections import defaultdict
 import cv2
@@ -133,6 +135,7 @@ def _audit_nodes(image, nodes, paper_bbox):
         return False,{'reason':'source_auditor_missing','error':str(exc)}
 
 
+@_grid_diag.observe('App/geometry/paper_first_grid_v12.py:try_paper_grid')
 def try_paper_grid(image, *, retry=False):
     """Return globally normalized graph or None; no OCR, no VAT assumptions.
 
@@ -147,7 +150,7 @@ def try_paper_grid(image, *, retry=False):
     def reject(reason):
         stats.update(reason=reason,elapsed_ms=round((perf_counter()-began)*1000,2))
         return None,{'status':'REJECTED','reason':reason},json_native(stats)
-    if image is None or not image.size:return reject('empty_source')
+    if image is None or not image.size:return _grid_diag.ret((reject('empty_source')), locals(), 'App/geometry/paper_first_grid_v12.py:try_paper_grid:L150')
     from .paper_locator import locate_paper
     from .lab_adapter_gridrefine_v3 import detect_for_lab
     from .local_grid_roi import offset_graph
@@ -155,13 +158,13 @@ def try_paper_grid(image, *, retry=False):
     stats.update(paper_ms=round(float(paper.elapsed_ms),2),
                  paper_bbox=list(paper.bbox) if paper.bbox else None,paper_reason=paper.reason)
     bbox=_rect(paper.bbox,image.shape)
-    if bbox is None:return reject('paper_not_confident')
+    if bbox is None:return _grid_diag.ret((reject('paper_not_confident')), locals(), 'App/geometry/paper_first_grid_v12.py:try_paper_grid:L158')
     if retry:
         t=perf_counter();levels=_source_levels(image,bbox)
         stats['paper_ink_census_ms']=round((perf_counter()-t)*1000,2)
         stats['paper_observed_rule_count']=len(levels)
         candidate=_table_band_from_evidence(bbox,levels,image.shape)
-        if candidate is None:return reject('no_independent_full_table_band')
+        if candidate is None:return _grid_diag.ret((reject('no_independent_full_table_band')), locals(), 'App/geometry/paper_first_grid_v12.py:try_paper_grid:L164')
     else:
         candidate=bbox
         levels=None
@@ -171,13 +174,14 @@ def try_paper_grid(image, *, retry=False):
     try:
         graph,raw_report=detect_for_lab(image[y0:y1,x0:x1])
     except Exception as exc:
+        _grid_diag.caught(locals(), 'App/geometry/paper_first_grid_v12.py:try_paper_grid:L173')
         stats['autogrid_roi_ms']=round((perf_counter()-t)*1000,2)
         stats['autogrid_error']=type(exc).__name__+': '+str(exc)
-        return reject('paper_autogrid_exception')
+        return _grid_diag.ret((reject('paper_autogrid_exception')), locals(), 'App/geometry/paper_first_grid_v12.py:try_paper_grid:L176')
     stats['autogrid_roi_ms']=round((perf_counter()-t)*1000,2)
     stats['local_edges']={ 'vertical':len(graph['vertical']) if graph else 0,
                            'horizontal':len(graph['horizontal']) if graph else 0}
-    if graph is None:return reject('paper_autogrid_rejected')
+    if graph is None:return _grid_diag.ret((reject('paper_autogrid_rejected')), locals(), 'App/geometry/paper_first_grid_v12.py:try_paper_grid:L180')
     # V12: only four genuine rails were fitted: seek the missing fifth in the
     # source pixels. Do not infer its position from the expected column widths.
     if len(graph.get('vertical',())) == 4 and len(graph.get('horizontal',())) >= 4:
@@ -186,7 +190,7 @@ def try_paper_grid(image, *, retry=False):
             image[y0:y1,x0:x1], graph)
         stats['vertical_rail_recovery'] = recovery_info
         if recovered is None:
-            return reject('four_rails_without_supported_fifth')
+            return _grid_diag.ret((reject('four_rails_without_supported_fifth')), locals(), 'App/geometry/paper_first_grid_v12.py:try_paper_grid:L189')
         graph = recovered
         stats['recovered_edges']={'vertical':len(graph['vertical']),
                                   'horizontal':len(graph['horizontal'])}
@@ -204,29 +208,30 @@ def try_paper_grid(image, *, retry=False):
     stats['post_header_edges']={'vertical':len(graph['vertical']),
                                 'horizontal':len(graph['horizontal'])}
     local_nodes,why=_validate_nodes(graph,(y1-y0,x1-x0))
-    if local_nodes is None:return reject('paper_'+why)
+    if local_nodes is None:return _grid_diag.ret((reject('paper_'+why)), locals(), 'App/geometry/paper_first_grid_v12.py:try_paper_grid:L207')
     try:
         global_graph=offset_graph(graph,candidate,image.shape[:2])
         nodes,why=_validate_nodes(global_graph,image.shape)
-        if nodes is None:return reject('global_'+why)
+        if nodes is None:return _grid_diag.ret((reject('global_'+why)), locals(), 'App/geometry/paper_first_grid_v12.py:try_paper_grid:L211')
         if levels is None:
             t=perf_counter();levels=_source_levels(image,bbox)
             stats['paper_ink_census_ms']=round((perf_counter()-t)*1000,2)
         stats['paper_observed_rule_count']=len(levels)
         excess,census=_has_excess_rows(levels,nodes,bbox)
         stats['ink_census']=census
-        if excess:return reject('incomplete_local_grid_observed_rules')
+        if excess:return _grid_diag.ret((reject('incomplete_local_grid_observed_rules')), locals(), 'App/geometry/paper_first_grid_v12.py:try_paper_grid:L218')
         audit_ok,audit=_audit_nodes(image,nodes,bbox)
         stats['source_completeness']=audit
-        if not audit_ok:return reject('incomplete_local_grid_'+str(audit.get('reason')))
+        if not audit_ok:return _grid_diag.ret((reject('incomplete_local_grid_'+str(audit.get('reason')))), locals(), 'App/geometry/paper_first_grid_v12.py:try_paper_grid:L221')
     except Exception as exc:
+        _grid_diag.caught(locals(), 'App/geometry/paper_first_grid_v12.py:try_paper_grid:L222')
         stats['audit_error']=type(exc).__name__+': '+str(exc)
-        return reject('audit_exception_'+type(exc).__name__)
+        return _grid_diag.ret((reject('audit_exception_'+type(exc).__name__)), locals(), 'App/geometry/paper_first_grid_v12.py:try_paper_grid:L224')
     stats.update(status='accepted',fallback_to_full=False,
                  elapsed_ms=round((perf_counter()-began)*1000,2))
-    return global_graph,json_native({'status':'OBSERVED_NOT_GT', 'selection':SELECTED,
+    return _grid_diag.ret((global_graph,json_native({'status':'OBSERVED_NOT_GT', 'selection':SELECTED,
                          'version':'paper_first_v12','autogrid':(raw_report or {}).get('autogrid',{}),
-                         'completeness_audit':audit,'edges':[]}),json_native(stats)
+                         'completeness_audit':audit,'edges':[]}),json_native(stats)), locals(), 'App/geometry/paper_first_grid_v12.py:try_paper_grid:L227')
 
 
 # V12: diagnostics are transmitted as JSON, numpy scalars are not serializable.

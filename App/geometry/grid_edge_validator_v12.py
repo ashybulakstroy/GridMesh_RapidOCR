@@ -5,6 +5,8 @@ printed grid rails; unaccounted actual table lines must still cause fallback.
 No receipt-specific coordinates, OCR, model-dependent shortcuts or GT imports.
 """
 from __future__ import annotations
+# GRID_ABORT_DIAGNOSTICS_V1
+from App import grid_abort_diagnostics_v1 as _grid_diag
 from time import perf_counter
 import cv2
 import numpy as np
@@ -46,6 +48,7 @@ def vertical_rail_bridge(image,nodes,line_y,grid_y):
             'coverage':[round(v,3) for v in ratios],'y_range':[lo,hi]}
 
 
+@_grid_diag.observe('App/geometry/grid_edge_validator_v12.py:audit_rowaware_printed_rows')
 def audit_rowaware_printed_rows(image,nodes,*,paper_bbox=None):
     """Independent full-height LSD scan; every printed row must be verified.
 
@@ -57,16 +60,16 @@ def audit_rowaware_printed_rows(image,nodes,*,paper_bbox=None):
     try:
         n=np.asarray(nodes,float);H,W=image.shape[:2]
         if n.ndim!=3 or n.shape[1:]!=(5,2) or len(n)<3 or not np.isfinite(n).all():
-            info['reason']='invalid_nodes';return False,info
+            info['reason']='invalid_nodes';return _grid_diag.ret((False,info), locals(), 'App/geometry/grid_edge_validator_v12.py:audit_rowaware_printed_rows:L60')
         ys=np.median(n[:,:,1],axis=1);xs=np.median(n[:,:,0],axis=0)
         if np.min(np.diff(ys))<=4 or np.min(np.diff(xs))<=5:
-            info['reason']='crossing_grid';return False,info
+            info['reason']='crossing_grid';return _grid_diag.ret((False,info), locals(), 'App/geometry/grid_edge_validator_v12.py:audit_rowaware_printed_rows:L63')
         lo,hi=float(xs[0]),float(xs[-1]);span=hi-lo
         x0=max(0,int(lo-22));x1=min(W,int(hi+22))
         y0=0 if paper_bbox is None else max(0,int(paper_bbox[1]))
         y1=H if paper_bbox is None else min(H,int(paper_bbox[3]))
         if span<70 or y1-y0<30:
-            info['reason']='invalid_region';return False,info
+            info['reason']='invalid_region';return _grid_diag.ret((False,info), locals(), 'App/geometry/grid_edge_validator_v12.py:audit_rowaware_printed_rows:L69')
         img=image[y0:y1,x0:x1]
         gray=cv2.cvtColor(img,cv2.COLOR_BGR2GRAY) if img.ndim==3 else img
         found=cv2.createLineSegmentDetector(cv2.LSD_REFINE_STD).detect(gray)[0]
@@ -153,7 +156,7 @@ def audit_rowaware_printed_rows(image,nodes,*,paper_bbox=None):
             missing=[x for x in missing if x not in verified]
             info['unverified_grid_edges']=missing
         if missing:
-            info['reason']='not_all_grid_lines_optically_verified';return False,info
+            info['reason']='not_all_grid_lines_optically_verified';return _grid_diag.ret((False,info), locals(), 'App/geometry/grid_edge_validator_v12.py:audit_rowaware_printed_rows:L156')
         groups=[]
         for segment in sorted(unknown,key=lambda z:z[1]):
             if groups and abs(segment[1]-np.median([s[1] for s in groups[-1]]))<=5.5:
@@ -216,7 +219,7 @@ def audit_rowaware_printed_rows(image,nodes,*,paper_bbox=None):
         # continuing vertical rails. Otherwise reject and use full fallback.
         unidentified=sorted(extras+partial+enhanced_extras,key=lambda item:item['y'])
         if not unidentified:
-            info.update(status='accepted',reason='all_physical_rows_verified');return True,info
+            info.update(status='accepted',reason='all_physical_rows_verified');return _grid_diag.ret((True,info), locals(), 'App/geometry/grid_edge_validator_v12.py:audit_rowaware_printed_rows:L219')
         groups=[]
         for item in unidentified:
             if groups and item['y']-groups[-1][-1]['y']<=13.:
@@ -230,7 +233,7 @@ def audit_rowaware_printed_rows(image,nodes,*,paper_bbox=None):
             gap=abs(level-nearest)
             min_gap=max(95.,float(np.median(np.diff(ys)))*2.1)
             if paper_bbox is None:
-                info['reason']='unmatched_without_verified_paper';return False,info
+                info['reason']='unmatched_without_verified_paper';return _grid_diag.ret((False,info), locals(), 'App/geometry/grid_edge_validator_v12.py:audit_rowaware_printed_rows:L233')
             ptop,pbot=float(paper_bbox[1]),float(paper_bbox[3])
             rim_margin=max(55., min(95.,(pbot-ptop)*.065))
             near_rim=(level-ptop<=rim_margin if level<ys[0]
@@ -239,7 +242,7 @@ def audit_rowaware_printed_rows(image,nodes,*,paper_bbox=None):
                 info['reason']='unmatched_possible_table_separator'
                 info['unmatched_failed']={'y':round(level,2),'inside':bool(is_inside),
                     'gap_px':round(gap,2),'near_paper_rim':bool(near_rim)}
-                return False,info
+                return _grid_diag.ret((False,info), locals(), 'App/geometry/grid_edge_validator_v12.py:audit_rowaware_printed_rows:L242')
             bridge=vertical_rail_bridge(image,n,level,nearest)
             classifications.append({'y':round(level,2),'gap_px':round(gap,2),
                                     'paper_edge':'top' if level<ys[0] else 'bottom',
@@ -247,14 +250,15 @@ def audit_rowaware_printed_rows(image,nodes,*,paper_bbox=None):
             if bridge['supported']>=2:
                 info['reason']='unmatched_line_connected_to_grid'
                 info['unmatched_failed']=classifications[-1]
-                return False,info
+                return _grid_diag.ret((False,info), locals(), 'App/geometry/grid_edge_validator_v12.py:audit_rowaware_printed_rows:L250')
         if len({x['paper_edge'] for x in classifications}) != len(classifications):
-            info['reason']='multiple_unconnected_lines_same_paper_rim';return False,info
+            info['reason']='multiple_unconnected_lines_same_paper_rim';return _grid_diag.ret((False,info), locals(), 'App/geometry/grid_edge_validator_v12.py:audit_rowaware_printed_rows:L252')
         info.update(status='accepted_with_observed_paper_rims',
                     reason='verified_grid_plus_independent_unconnected_paper_rims',
                     excluded_document_rules=classifications)
-        return True,info
+        return _grid_diag.ret((True,info), locals(), 'App/geometry/grid_edge_validator_v12.py:audit_rowaware_printed_rows:L256')
     except (ValueError,TypeError,IndexError,cv2.error,FloatingPointError) as exc:
-        info['reason']='audit_error:'+type(exc).__name__;return False,info
+        _grid_diag.caught(locals(), 'App/geometry/grid_edge_validator_v12.py:audit_rowaware_printed_rows:L257')
+        info['reason']='audit_error:'+type(exc).__name__;return _grid_diag.ret((False,info), locals(), 'App/geometry/grid_edge_validator_v12.py:audit_rowaware_printed_rows:L258')
     finally:
         info['elapsed_ms']=round((perf_counter()-started)*1000,3)

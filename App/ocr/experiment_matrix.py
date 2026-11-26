@@ -165,6 +165,10 @@ class CandidateBook:
         values = defaultdict(list)
         for rec in bucket['observations']:
             if rec['number'] is not None:
+                if field == 'price' and not bucket.get('user_locked'):
+                    value = Decimal(rec['number'])
+                    if value != value.to_integral_value():
+                        continue
                 values[rec['number']].append(rec)
         if bucket.get('user_locked'):
             locked = bucket.get('user_value')

@@ -3,6 +3,8 @@
 No GT, OCR, target row count or receipt identifiers enter this module. Existing
 warpers and V1 are retained verbatim for the diagnostic comparison.
 """
+# GRID_ABORT_DIAGNOSTICS_V1
+from App import grid_abort_diagnostics_v1 as _grid_diag
 from App.ocr.performance_deep.live_capture import timed as _deep_timed
 from App.ocr.performance_deep.live_capture import current as _deep_current, count as _deep_count
 from time import perf_counter_ns
@@ -168,6 +170,7 @@ def trace_seed(response,seed,xs,dark=None):
     return ys,vals
 
 
+@_grid_diag.observe('App/geometry/geometry_lab/physical_grid_graph_local.py:detect_physical_graph')
 @_deep_timed("grid", "App/geometry/geometry_lab/physical_grid_graph_local.py:detect_physical_graph")
 def detect_physical_graph(image, *, ridge=None):
     H,W=image.shape[:2];gray=cv2.cvtColor(image,cv2.COLOR_BGR2GRAY)
@@ -184,7 +187,7 @@ def detect_physical_graph(image, *, ridge=None):
         vv=_choose_verticals(vertical_candidates,W,H);fallback=True
     report=dict(status='REJECTED',version='local_physical_graph_v2',edges=[],rejected=[],nodes=[],
                 vertical_fallback=fallback,semantics='VAT/total unknown without text or human labels')
-    if vv is None:report['reason']='five_vertical_proposals_missing';return None,report
+    if vv is None:report['reason']='five_vertical_proposals_missing';return _grid_diag.ret((None,report), locals(), 'App/geometry/geometry_lab/physical_grid_graph_local.py:detect_physical_graph:L187')
     local=table_local_verticals(gray,vv,segments=vertical_segments)
     refined=graph_verticals(local,fitted,W,H) if len(local)>=5 else None
     if refined is not None:vv=refined;report['vertical_table_local_refit']=True
@@ -195,7 +198,7 @@ def detect_physical_graph(image, *, ridge=None):
     left=float(np.median(vv[0].eval((centers-H/2)/H)))
     right=float(np.median(vv[-1].eval((centers-H/2)/H)))
     left=max(0,left);right=min(W-1,right)
-    if right-left<50:report['reason']='narrow_table';return None,report
+    if right-left<50:report['reason']='narrow_table';return _grid_diag.ret((None,report), locals(), 'App/geometry/geometry_lab/physical_grid_graph_local.py:detect_physical_graph:L198')
     xs=np.linspace(left,right,max(40,int((right-left)/2)+1))
     seeds=[]
     for _,s,length in segments:
@@ -279,6 +282,6 @@ def detect_physical_graph(image, *, ridge=None):
     report['vertical_proposals']=[dict(position=v.position,domain=v.domain) for v in vv]
     for j,(r,e) in enumerate(clean):
         for i,v in enumerate(vv):report['nodes'].append(dict(horizontal=j,vertical=i,point=intersection(v,r,image.shape),ink_confirmed=e['intersection_evidence'][i]))
-    if len(clean)<3:report['reason']='fewer_than_three_supported_edges';return None,report
+    if len(clean)<3:report['reason']='fewer_than_three_supported_edges';return _grid_diag.ret((None,report), locals(), 'App/geometry/geometry_lab/physical_grid_graph_local.py:detect_physical_graph:L282')
     report.update(status='OBSERVED_NOT_VERIFIED',vertical=5,horizontal=len(clean),seeds_traced=len(used))
-    return dict(vertical=vv,horizontal=[r for r,e in clean],shape=(H,W)),report
+    return _grid_diag.ret((dict(vertical=vv,horizontal=[r for r,e in clean],shape=(H,W)),report), locals(), 'App/geometry/geometry_lab/physical_grid_graph_local.py:detect_physical_graph:L284')
