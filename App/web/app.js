@@ -172,7 +172,7 @@ if(e4status){
  const uncertain=!!matrix.review_required;
  const changes=current.numeric_auto_corrections?.changes?.length||0;
  e4status.textContent=matrix.status==='ambiguous'?'Выбрана комбинация с наибольшей уверенностью OCR. Несколько комбинаций совпадают по суммам — пожалуйста, проверьте цифры.':
-   changes?('Система уточнила '+changes+' числовых значений по единственной арифметически согласованной комбинации OCR.'):
+   changes?('Система уточнила '+changes+' числовых значений по OCR и независимому контролю сумм.'):
    matrix.status==='unique_math_match'?'Сверка по итогам завершена.':'Не удалось выбрать комбинацию чисел. Пожалуйста, проверьте цифры.';
  e4status.hidden=!e4enabled;
 }

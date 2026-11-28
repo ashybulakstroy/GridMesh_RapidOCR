@@ -9,6 +9,11 @@ import App.pipeline as pipeline
 
 HERE = Path(__file__).resolve().parent
 
+
+def latin_identifier(text):
+    """Compare visually identical Latin/Cyrillic glyphs, not arbitrary OCR edits."""
+    return text.upper().translate(str.maketrans('АВЕКМНОРСТХУ','ABEKMHOPCTXY')).casefold()
+
 @pytest.mark.parametrize(('text','expected'), [
     ('2', '2'),
     ('4 000,000', '4000.000'),
@@ -62,6 +67,7 @@ def test_recovers_tax_row_below_detected_grid():
 @pytest.mark.parametrize('failure', ['empty', 'exception'])
 def test_footer_detector_falls_back_when_fast_detector_fails(monkeypatch, failure):
     monkeypatch.setenv('OCR_FOOTER_FOCUS_ENABLE','0')  # Explicitly exercise legacy detector fallback.
+    monkeypatch.setattr(pipeline,'read_line',lambda *_:None)  # Force REC-only footer paths to fail first.
     real_read_full = pipeline.read_full
     calls = []
     def read_with_failed_fast(image, *, footer_mode=False):
@@ -87,39 +93,39 @@ def test_real_receipt_geometry_and_math(name, expected, products):
     result = process((HERE/name).read_bytes())
     assert result['status'] in {'ok', 'review'}
     assert result['math_match']
-    assert result['total'] == expected
+    assert number(result['total']) == number(expected)
     assert len([r for r in result['rows'] if r['kind'] == 'product']) == products
     assert len([r for r in result['rows'] if r['kind'] == 'tax']) == 1
     if name == 'receipt_597275.png':
         assert 'ботинки' in result['rows'][0]['cells']['name']['text'].casefold()
-        assert 'bts' in result['rows'][0]['cells']['name']['text'].casefold()
+        assert 'bts' in latin_identifier(result['rows'][0]['cells']['name']['text'])
         assert result['rows'][0]['cells']['quantity']['text'] == '1'
         assert result['rows'][1]['cells']['quantity']['text'] == '1'
         assert result['vat']['status'] == 'match'
     if name == 'receipt_575866.png':
         assert result['rows'][-1]['cells']['quantity']['text'] == '6336'
-        assert 'tulex' in result['rows'][0]['cells']['name']['text'].casefold()
-        assert 'ct15074' in result['rows'][1]['cells']['name']['text'].casefold()
+        assert 'tulex' in latin_identifier(result['rows'][0]['cells']['name']['text'])
+        assert 'ct15074' in latin_identifier(result['rows'][1]['cells']['name']['text'])
     if name == 'receipt_5730.png':
         assert 'startul' in result['rows'][0]['cells']['name']['text'].casefold()
-        assert 'st9084-50' in result['rows'][0]['cells']['name']['text'].casefold()
+        assert 'st9084-50' in latin_identifier(result['rows'][0]['cells']['name']['text'])
     assert all(r['cells']['name']['source_bbox'] for r in result['rows'])
     assert Path(result['geometry']['inverse_map']).is_file()
     directory = Path(result['job_directory'])
     for name in ('input.bin', 'original.png', 'rectified.png', 'receipt.json', 'performance_profile.json', 'rectification_map.npz'):
         assert (directory/name).is_file()
 
-def test_problem_geometry_requires_review():
-    result = process((HERE/'receipt_wheels.png').read_bytes())
-    assert result['status'] == 'review'
-    assert result['geometry']['warnings']
-    assert result['geometry']['method'] == 'AutoGrid GridRefine V3'
-    assert result['geometry']['safety']['status'] == 'MEASURED'
-    assert result['geometry']['safety']['source_valid_fraction'] < .995
-    assert result['total'] == '25346.00'
-    assert number(result['rows'][2]['cells']['price']['text']) == 6350
-    assert result['math_match']
-    assert any(a.get('strategy') == 'compact_line' for a in result['footer_ocr_attempts'])
+def test_unsafe_problem_geometry_is_rejected_and_logged():
+    import json,uuid
+    job_id=uuid.uuid4().hex
+    # This fixture maps outside the photo (<.995 source coverage). The current
+    # hard safety gate must not publish the old, merely "review" receipt.
+    with pytest.raises(ValueError,match='invalid_mesh_geometry'):
+        process((HERE/'receipt_wheels.png').read_bytes(),job_id=job_id)
+    folder=pipeline.output_directory()/job_id
+    gate=json.loads((folder/'grid_anomaly.json').read_text(encoding='utf-8'))
+    assert 'invalid_mesh_geometry' in gate['initial']['reasons']
+    assert not (folder/'receipt.json').exists()
 
 def test_six_column_receipt_uses_read_header_to_map_columns():
     result = process((HERE/'receipt_six_columns.jpg').read_bytes())
@@ -155,9 +161,13 @@ def test_complete_grid_and_printed_total_on_receipt_2142830460():
     result = process((HERE/'receipt_2142830460.jpg').read_bytes())
     assert len(result['rows']) == 14
     assert len([r for r in result['rows'] if r['kind'] == 'tax']) == 1
-    assert result['total'] == '38825.00'
+    assert number(result['total']) == 38825
     assert result['status'] == 'review'
-    assert not result['math_match']
+    assert [(number(r['cells']['quantity']['text']),number(r['cells']['price']['text']))
+            for r in result['rows']] == [
+        (2,400),(2,550),(4,40),(4,40),(2,60),(1,250),(1,470),
+        (1,1000),(2,1530),(41,300),(1,750),(1,13000),(1,300),(5355,1)]
+    assert result['math_match']
     assert result['geometry']['method'] == 'AutoGrid GridRefine V3 + Physical Grid Graph V3'
 
 
@@ -187,9 +197,16 @@ def test_long_receipt_keeps_first_product_and_separates_sixth_seventh():
     assert sixth[:,1].max() < seventh[:,1].min()
     assert number(rows[15]['cells']['price']['text']) == 380
     assert number(rows[-1]['cells']['price']['text']) == 1
-    assert result['total'] == '538936.00'
-    # Remaining numerical discrepancies must remain visible, never force balance.
-    assert not result['math_match']
+    assert number(result['total']) == 538936
+    # These pairs were checked against the photograph, not inferred from its total.
+    assert [(number(r['cells']['quantity']['text']),number(r['cells']['price']['text']))
+            for r in rows] == [
+        (100,390),(1,1650),(1,2200),(5,750),(24,530),(10,150),
+        (50,2250),(100,510),(5,2840),(2,1500),(2,1500),(5,1120),
+        (5,1050),(20,40),(1,380),(1,380),(5,1170),(5,650),
+        (1,50000),(30,220),(10,1900),(15,1230),(5,1490),(5,890),
+        (2,5000),(6,1470),(2,7650),(10,900),(18,2750),(74336,1)]
+    assert result['math_match']
 
 
 def test_price_1120_keeps_both_leading_ones():
@@ -216,6 +233,8 @@ def test_receipt_29464_preserves_price_1120_and_matches_printed_total():
 
 def test_budget_overrun_is_saved_and_mismatch_triggers_double_budget_retry(monkeypatch):
     import json
+    monkeypatch.setenv('OCR_TABLE_MODE','batch')
+    monkeypatch.setenv('OCR_E4_ROUTE_RETRIES','0')  # This test targets the legacy doubled-budget path.
 
     original_read_batches = pipeline.read_batches
     def missed_price(cells, **kwargs):
@@ -248,6 +267,8 @@ def test_budget_overrun_is_saved_and_mismatch_triggers_double_budget_retry(monke
 def test_budget_overrun_is_preserved_when_processing_later_fails(monkeypatch):
     import json
     import uuid
+    monkeypatch.setenv('OCR_TABLE_MODE','batch')
+    monkeypatch.setenv('OCR_E4_ROUTE_RETRIES','0')
 
     original_read_batches = pipeline.read_batches
     def overrun(cells, **kwargs):
@@ -263,7 +284,7 @@ def test_budget_overrun_is_preserved_when_processing_later_fails(monkeypatch):
     job_id = uuid.uuid4().hex
     with pytest.raises(RuntimeError, match='test failure'):
         process((HERE/'fixtures'/'receipt_29464.jpg').read_bytes(), job_id=job_id)
-    job_dir = HERE.parent.parent/'data'/'output'/job_id
+    job_dir = pipeline.output_directory()/job_id
     events = json.loads((job_dir/'processing_log.json').read_text(encoding='utf-8'))
     profile = json.loads((job_dir/'performance_profile.json').read_text(encoding='utf-8'))
     assert any(event['type']=='budget' and event['elapsed_ms']==12.5 for event in events)
@@ -272,6 +293,8 @@ def test_budget_overrun_is_preserved_when_processing_later_fails(monkeypatch):
 
 
 def test_budget_limited_low_confidence_does_not_retry_if_total_matches(monkeypatch):
+    monkeypatch.setenv('OCR_TABLE_MODE','batch')
+    monkeypatch.setenv('OCR_E4_ROUTE_RETRIES','0')
     original_read_batches = pipeline.read_batches
     def low_confidence(cells, **kwargs):
         results, stats = original_read_batches(cells, **kwargs)
@@ -315,6 +338,12 @@ def test_six_column_problem_receipt_retains_prices_and_printed_totals():
         row = result['rows'][index]
         assert number(row['cells']['price']['text']) == price
         assert number(row['cells']['printed_total']['text']) == printed_total
+    first=result['rows'][0]['cells']['price']
+    if first.get('strategy')=='e4_printed_row_observed_candidate':
+        assert number(first['auto_corrected_from']) is None
+        assert first['model_id']=='v5_cyrillic_mobile'
+        assert first['auto_ocr_evidence']
+        assert result['numeric_auto_corrections']['status']=='partial_row_repair'
     # Other fields on this receipt are still uncertain.
     assert result['status'] == 'review'
 

@@ -38,6 +38,7 @@ def test_rec_context_restored_after_failure(monkeypatch):
 
 
 def test_manual_save_preserves_prior_user_truth_in_memory(tmp_path,monkeypatch):
+    monkeypatch.setenv('OUTPUT_DIR',str(tmp_path/'data/output'))
     import App.web_server as server
     job_id='a'*32;directory=tmp_path/'data/output'/job_id;directory.mkdir(parents=True)
     original={'job_id':job_id,'job_directory':f'data/output/{job_id}',

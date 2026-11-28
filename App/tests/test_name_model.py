@@ -5,6 +5,8 @@ import App.ocr.engine as engine
 
 
 def test_models_are_selected_by_field_and_context_restored(monkeypatch):
+    monkeypatch.setenv('OCR_TEXT_FAST_MODE','A')  # Test base model routing, not selective name retries.
+    monkeypatch.setenv('OCR_UNIFIED_TINY_ENABLE','1')
     seen=[]
     def read(image,row_id,column_id,offset,**kwargs):
         seen.append(engine._NAME_MODEL.get())

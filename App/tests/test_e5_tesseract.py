@@ -1,4 +1,6 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import numpy as np
@@ -23,7 +25,16 @@ class TesseractFallbackTest(unittest.TestCase):
             text = results.pop(0)
             return {'text':text, 'number':text, 'error':None,
                     'variant':kwargs['variant'], 'wall_ms':1}
-        with patch.object(e5_tesseract, 'executable', return_value='tesseract'), \
+        with TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            model=root/'models/tesseract_kaz/tessdata/kaz.traineddata'
+            model.parent.mkdir(parents=True)
+            model.touch()  # OCR is mocked; this test exercises the recovery policy.
+            return self._run_available(root,item,read,recovery,kwargs)
+
+    def _run_available(self, root, item, read, recovery, kwargs):
+        with patch.object(e5_tesseract, 'ROOT', root), \
+             patch.object(e5_tesseract, 'executable', return_value='tesseract'), \
              patch.object(e5_tesseract, 'read_tesseract', side_effect=read), \
              patch.object(e5_tesseract, 'prepare_numeric_input', side_effect=lambda img, field:(img, {})):
             return e5_tesseract.recover_with_tesseract(
@@ -100,6 +111,18 @@ class TesseractFallbackTest(unittest.TestCase):
                 [item], {(1, 'price'):np.zeros((20, 40, 3), np.uint8)}, {})
         self.assertEqual(result['status'], 'unavailable')
         self.assertEqual(item['cells']['price']['text'], '1E50')
+
+    def test_missing_language_model_keeps_original_without_starting_ocr(self):
+        item=row()
+        with TemporaryDirectory() as temporary, \
+             patch.object(e5_tesseract,'ROOT',Path(temporary)), \
+             patch.object(e5_tesseract,'executable',return_value='tesseract'), \
+             patch.object(e5_tesseract,'read_tesseract') as read:
+            result=e5_tesseract.recover_with_tesseract(
+                [item],{(1,'price'):np.zeros((20,40,3),np.uint8)},{})
+        self.assertEqual(result['status'],'unavailable')
+        self.assertEqual(item['cells']['price']['text'],'1E50')
+        read.assert_not_called()
 
     def test_e4_nonnumeric_observation_triggers_e5_for_valid_initial_value(self):
         item = row(value='4.10')

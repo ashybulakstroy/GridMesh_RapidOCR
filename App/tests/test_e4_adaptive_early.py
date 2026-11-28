@@ -131,6 +131,7 @@ def test_comparison_separates_formatting_changes_and_final_ambiguity():
 
 
 def test_download_early_requires_known_job_and_ready_file(tmp_path,monkeypatch):
+    monkeypatch.setenv('OUTPUT_DIR',str(tmp_path/'data/output'))
     import App.web_server as server
     from fastapi import HTTPException
     monkeypatch.setattr(server,'ROOT',tmp_path)
@@ -162,7 +163,7 @@ def test_real_adaptive_final_preserves_current_candidates_and_immutable_preview(
     def publish(progress):
         if progress.get('e4_early_ready'):
             snapshot=progress['e4_first_result']
-            path=pipeline.ROOT/'data/output'/snapshot['job_id']/'e4_early_result.json'
+            path=pipeline.output_directory()/snapshot['job_id']/'e4_early_result.json'
             published.append((path,path.read_bytes()))
     result=pipeline.process(data,publish)
     assert result['e4_adaptive']['first_ready'] and len(published)==1

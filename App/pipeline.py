@@ -1298,6 +1298,12 @@ def _process_route_body(data, profile, job_dir, rectify):
             numeric_auto_corrections = auto_apply_consensus(
                 rows,book,numeric_matrix,total,
                 enabled=setting('OCR_E4_AUTO_APPLY','1') == '1')
+            if numeric_auto_corrections['status']=='partial_row_repair':
+                processing_log.append({'type':'operation','stage':'E4 контроль напечатанных строк',
+                    'changes':numeric_auto_corrections['changes'],
+                    'message':'Нечитаемые поля уточнены по независимому OCR и сумме строки: '
+                              +str(len(numeric_auto_corrections['changes']))
+                              +'; весь чек остаётся на проверке.'})
             if numeric_auto_corrections['status']=='applied':
                 total=numeric_auto_corrections['printed_total']
                 # Corrections may turn an unreadable VAT row into a valid

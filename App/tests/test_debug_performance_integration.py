@@ -36,6 +36,7 @@ def test_real_receipt_persists_diagnostics_without_changing_total(monkeypatch,le
 @pytest.mark.parametrize('level',['INFO','DEBUG'])
 def test_failure_persists_issue_and_restores_parent_context(tmp_path,monkeypatch,level):
     monkeypatch.setenv('LOG_LEVEL',level)
+    monkeypatch.setenv('OUTPUT_DIR',str(tmp_path/'data/output'))
     monkeypatch.setattr(pipeline,'ROOT',tmp_path)
     def fail(*args,**kwargs):raise RuntimeError('forced diagnostics failure')
     monkeypatch.setattr(pipeline,'_process',fail)
