@@ -146,6 +146,7 @@ def trace_seed(response,seed,xs,dark=None):
     ys=base+offsets[indices]
     # Smooth subpixel noise only; no polynomial extrapolation beyond fragments.
     ys=cv2.GaussianBlur(ys.reshape(1,-1).astype(np.float32),(5,1),.8).ravel()
+    tracked=ys.copy()
     if _capture:
         _now=perf_counter_ns();_steps['восстановление и сглаживание']=(_now-_tick)/1e6;_tick=_now
     # A printed edge varies smoothly across the sheet. Robust local ridge fitting
@@ -169,6 +170,14 @@ def trace_seed(response,seed,xs,dark=None):
         # ink than the tracked path. This prevents nearby glyphs stealing a faint
         # straight rule. Both alternatives face the same junction tests below.
         if physical_coverage(base)>physical_coverage(ys)+.025:ys=base
+        # A crease need not follow a single cubic. Keep the observed path only
+        # with near-continuous source ink in every quarter of the table.
+        iy=np.rint(tracked).astype(int).clip(0,H-1)
+        pixel=np.maximum.reduce([dark[(iy+d).clip(0,H-1),ix] for d in [-1,0,1]])
+        observed=(response[iy,ix]>=7)&(pixel>=9)
+        if (observed.mean()>=.94 and min(s.mean() for s in np.array_split(observed,4))>=.88
+                and observed.mean()>physical_coverage(ys)+.025):
+            ys=tracked
     vals=response[np.rint(ys).astype(int).clip(0,H-1),np.rint(xs).astype(int).clip(0,W-1)]
     if _capture:
         _now=perf_counter_ns();_steps['проверка пикселей']=(_now-_tick)/1e6

@@ -526,15 +526,18 @@ def _process_route_body(data, profile, job_dir, rectify):
         columns=_v12_read_columns(rect, rescued=bool(geometry.get('paper_first_v12')))
     except ValueError as _v12_error:
         _grid_diag.caught(locals(), 'App/pipeline.py:_process_route_body:L488')
-        from .geometry.service import build_grid_paper_rescue
+        from .geometry.service import build_grid_paper_rescue, build_grid_physical_header_rescue
         _v12_rescue=build_grid_paper_rescue(image,rectify=rectify,
-                                         phase=profile.phase,header_validator=_v12_validate_header)
+                                    phase=profile.phase,header_validator=_v12_validate_header)
         if _v12_rescue is None:
             from .geometry.service import build_grid_source_rescue
             _v12_rescue=build_grid_source_rescue(image,rectify=rectify,
                              phase=profile.phase,header_validator=_v12_validate_header)
             if _v12_rescue is None:
-                raise _v12_error
+                _v12_rescue=build_grid_physical_header_rescue(image,rectify=rectify,
+                              phase=profile.phase,header_validator=_v12_validate_header)
+                if _v12_rescue is None:
+                    raise _v12_error
         _v12_rect,_v12_overlay,_v12_geometry=_v12_rescue
         # Never promote a graph whose actual OCR header is unreadable.
         columns=_v12_read_columns(_v12_rect,rescued=True)
@@ -542,8 +545,11 @@ def _process_route_body(data, profile, job_dir, rectify):
         xs=[int(round(x)) for x in rect.xs]
         ys=[int(round(y)) for y in rect.ys]
         footer_focus_guide=guide_from_grid(rect,image.shape)
-        processing_log.append({'type':'operation','stage':'V12 PaperFirst recovery',
-            'message':'Частичная таблица отклонена; использована полная сетка по бумаге.'})
+        processing_log.append({'type':'operation',
+            'stage':'Physical header recovery' if geometry.get('physical_header_rescue') else 'V12 PaperFirst recovery',
+            'message':('Использована независимая физическая сетка с подтверждённым заголовком.'
+                       if geometry.get('physical_header_rescue') else
+                       'Частичная таблица отклонена; использована полная сетка по бумаге.')})
     # GRID_ANOMALY_V3: independent source coverage and printed ordinals.
     # Run on every selected route (including SMART/full-image fallback),
     # before publishing preview or starting expensive product OCR.

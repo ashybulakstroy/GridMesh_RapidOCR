@@ -162,6 +162,55 @@ def _repair_extreme_horizontal_curves(image, data):
         return {**data,'horizontal':rules},repaired,unresolved
     return data,0,unresolved
 
+def _remaining_extreme_curves(image, data):
+    """Recheck the FINAL curves after fold/left-edge repairs against source ink.
+
+    This changes no curve or mesh threshold. An unresolved pre-repair warning
+    must not veto a subsequently corrected and optically supported boundary.
+    """
+    from .grid_anomaly_v51 import curve_proof
+    H,W=image.shape[:2]
+    vs,hs=data['vertical'],data['horizontal']
+    xs=np.linspace(max(0,vs[1].position),min(W,vs[-1].position),40)
+    norm=(xs-W/2)/W
+    gray=cv2.cvtColor(image,cv2.COLOR_BGR2GRAY) if image.ndim==3 else image
+    proofs=[]
+    for index,rule in enumerate(hs[1:-1],1):
+        y=rule.eval(norm)
+        if np.max(abs(y-np.linspace(y[0],y[-1],len(y))))<=max(12,(xs[-1]-xs[0])*.035):
+            continue
+        proof=curve_proof(gray,rule,vs)
+        proofs.append({'line_index':index,**proof})
+    return sum(not p['accepted'] for p in proofs),proofs
+
+
+def build_grid_physical_header_rescue(image, *, rectify=False, phase=None, header_validator=None):
+    """Independent physical candidate only after actual header OCR has failed.
+
+    Never force a four-column layout onto a readable six-column receipt.
+    A replacement must pass the existing header and mesh-safety checks.
+    """
+    if header_validator is None:
+        return None
+    try:
+        graph,report=detect_physical_graph(image)
+        if graph is None or len(graph['vertical'])!=5:
+            return None
+        result,overlay,geometry=_build_grid_core(
+            image,rectify=rectify,phase=phase,pre_detected=(graph,report))
+        check=geometry.get('safety') or {}
+        if (check.get('status')!='MEASURED' or check.get('folded_fraction',1)>0 or
+                check.get('source_valid_fraction',0)<.995 or
+                geometry.get('unresolved_extreme_horizontal',0)>0 or
+                not header_validator(result)):
+            return None
+        geometry['physical_header_rescue']=True
+        return result,overlay,geometry
+    except (ValueError,IndexError,cv2.error):
+        _grid_diag.caught(locals(),'App/geometry/service.py:physical_header_rescue')
+        return None
+
+
 @_grid_diag.observe('App/geometry/service.py:_build_grid_core')
 def _build_grid_core(image, *, rectify=False, phase=None, pre_detected=None):
     _debug=get_debug()
@@ -283,6 +332,12 @@ def _build_grid_core(image, *, rectify=False, phase=None, pre_detected=None):
     if _debug is not None:
         _debug.add_geometry('recover_left_edges',(perf_counter()-_left_t0)*1000,
                             {'recovered':left_recovered})
+    if unresolved_curves and (fold_recovered or left_recovered):
+        _curve_t0=perf_counter()
+        unresolved_curves,final_curve_proofs=_remaining_extreme_curves(image,data)
+        if _debug is not None:
+            _debug.add_geometry('verify_final_curvature',(perf_counter()-_curve_t0)*1000,
+                                {'unresolved':unresolved_curves,'proofs':final_curve_proofs})
     # GRID_SPEED_COMBINED_V1: repair only a speculative adaptive candidate.
     _combo_diag=None
     from ..config import setting as _combo_setting
